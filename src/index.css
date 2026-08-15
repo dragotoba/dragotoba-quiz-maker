@@ -7,4 +7,79 @@
     background-color: #ffffff;
     color: #000000;
   }
+
+  a {
+    color: #2f5d76;
+  }
+
+  a:hover {
+    color: #244a5e;
+  }
+}
+
+@keyframes qh-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes qh-spin-rev {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+@keyframes qh-marquee {
+  from {
+    transform: translateX(-50%);
+  }
+  to {
+    transform: translateX(0%);
+  }
+}
+
+.qh-page {
+  background: repeating-linear-gradient(
+    45deg,
+    #ffffff 0px,
+    #f5f5a7 80px,
+    #ffffff 160px,
+    #92d9f8 240px,
+    #ffffff 320px,
+    #f9baba 400px,
+    #ffffff 480px,
+    #c8e4bc 560px,
+    #ffffff 640px
+  );
+}
+
+.qh-spin {
+  animation: qh-spin 42s linear infinite;
+}
+
+.qh-spin-rev {
+  animation: qh-spin-rev 42s linear infinite;
+}
+
+.qh-marquee-slow {
+  animation: qh-marquee 34s linear infinite;
+  will-change: transform;
+}
+
+.qh-marquee-fast {
+  animation: qh-marquee 30s linear infinite;
+  will-change: transform;
+}
+
+@media (max-width: 480px) {
+  .qh-orbit {
+    transform: scale(0.72);
+    transform-origin: center center;
+  }
 }
