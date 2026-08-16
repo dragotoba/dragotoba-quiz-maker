@@ -1,4 +1,13 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { Link, Navigate, useParams } from "react-router-dom";
+import {
+  DEFAULT_PROJECT_NAME,
+  emptySection,
+  getStoredQuiz,
+  nextSectionName,
+  saveStoredQuiz,
+  type StoredQuizDocument,
+} from "@/lib/quizStorage";
 
 type QuestionBox = {
   id: string;
@@ -17,7 +26,60 @@ type TransitionBlock = {
   effects: AnswerEffect[];
 };
 
-type CanvasBox = QuestionBox | TransitionBlock;
+type StartBlock = {
+  id: string;
+  x: number;
+  y: number;
+  kind: "start";
+  effects: AnswerEffect[];
+};
+
+type SectionChangerBlock = {
+  id: string;
+  x: number;
+  y: number;
+  kind: "section-changer";
+  effects: AnswerEffect[];
+  /** "next" or a specific section id. */
+  targetSection: "next" | string;
+};
+
+type CanvasBox = QuestionBox | TransitionBlock | StartBlock | SectionChangerBlock;
+type EffectBlock = TransitionBlock | StartBlock | SectionChangerBlock;
+
+function isEffectBlock(box: CanvasBox): box is EffectBlock {
+  return (
+    box.kind === "transition" ||
+    box.kind === "start" ||
+    box.kind === "section-changer"
+  );
+}
+
+function createStartBlock(x = 0, y = 0): StartBlock {
+  return {
+    id: crypto.randomUUID(),
+    x,
+    y,
+    kind: "start",
+    effects: [],
+  };
+}
+
+function createSectionChangerBlock(x = 0, y = 0): SectionChangerBlock {
+  return {
+    id: crypto.randomUUID(),
+    x,
+    y,
+    kind: "section-changer",
+    effects: [],
+    targetSection: "next",
+  };
+}
+
+function ensureStartBlock(boxes: CanvasBox[]): CanvasBox[] {
+  if (boxes.some((box) => box.kind === "start")) return boxes;
+  return [createStartBlock(), ...boxes];
+}
 
 type AnswerOption = {
   id: string;
@@ -27,20 +89,24 @@ type AnswerOption = {
 
 type EffectOperation = "set" | "add" | "subtract" | "multiply" | "divide";
 
+type VariableValue = number | string;
+
 type AnswerEffect = {
   id: string;
   variableId: string;
   operation: EffectOperation;
   /** Amount / set-to value; for bool set, 0 = false and 1 = true. */
-  value: number;
+  value: VariableValue;
 };
+
+type VariableType = "number" | "bool" | "string";
 
 type ProjectVariable = {
   id: string;
   name: string;
-  isBool: boolean;
-  /** Float value; for bools, 0 = false and 1 = true. */
-  value: number;
+  type: VariableType;
+  /** Float/bool(0|1)/string depending on type. */
+  value: VariableValue;
 };
 
 type ConditionOperator = "eq" | "neq" | "gt" | "lt" | "gte" | "lte";
@@ -51,10 +117,55 @@ type TransitionCondition = {
   variableId: string;
   operator: ConditionOperator;
   /** Compare-to value; for bools, 0 = false and 1 = true. */
-  value: number;
+  value: VariableValue;
   /** How this condition combines with the previous one. Unused on the first. */
   join: ConditionJoin;
 };
+
+const VARIABLE_TYPES: { value: VariableType; label: string }[] = [
+  { value: "number", label: "number" },
+  { value: "bool", label: "bool" },
+  { value: "string", label: "string" },
+];
+
+function coerceValueForType(type: VariableType, value: VariableValue): VariableValue {
+  if (type === "string") return typeof value === "string" ? value : String(value ?? "");
+  if (type === "bool") {
+    if (typeof value === "string") return value === "true" || value === "1" ? 1 : 0;
+    return value !== 0 ? 1 : 0;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function variableTypeLabel(type: VariableType) {
+  return type === "number" ? "" : ` (${type})`;
+}
+
+function isSetOnlyVariableType(type: VariableType | undefined) {
+  return type === "bool" || type === "string";
+}
+
+function normalizeProjectVariable(raw: unknown): ProjectVariable | null {
+  if (!raw || typeof raw !== "object") return null;
+  const v = raw as Record<string, unknown>;
+  if (typeof v.id !== "string" || typeof v.name !== "string") return null;
+
+  let type: VariableType = "number";
+  if (v.type === "bool" || v.type === "string" || v.type === "number") {
+    type = v.type;
+  } else if (v.isBool === true) {
+    type = "bool";
+  }
+
+  return {
+    id: v.id,
+    name: v.name,
+    type,
+    value: coerceValueForType(type, v.value as VariableValue),
+  };
+}
 
 type Transition = {
   id: string;
@@ -63,11 +174,27 @@ type Transition = {
   conditions: TransitionCondition[];
 };
 
-type TransitionDraft = {
-  fromId: string;
-  mouseX: number;
-  mouseY: number;
-};
+type TransitionDraft =
+  | {
+      kind: "create";
+      fromId: string;
+      mouseX: number;
+      mouseY: number;
+    }
+  | {
+      kind: "retarget-origin";
+      transitionId: string;
+      toId: string;
+      mouseX: number;
+      mouseY: number;
+    }
+  | {
+      kind: "retarget-destination";
+      transitionId: string;
+      fromId: string;
+      mouseX: number;
+      mouseY: number;
+    };
 
 type Camera = {
   x: number;
@@ -88,6 +215,12 @@ type ContextMenuState =
       screenX: number;
       screenY: number;
       boxId: string;
+    }
+  | {
+      kind: "transition";
+      screenX: number;
+      screenY: number;
+      transitionId: string;
     }
   | null;
 
@@ -251,7 +384,11 @@ type BoxRect = {
 };
 
 function boxRect(box: CanvasBox): BoxRect {
-  if (box.kind === "transition") {
+  if (
+    box.kind === "transition" ||
+    box.kind === "start" ||
+    box.kind === "section-changer"
+  ) {
     const height = EMPTY_HEIGHT;
     const width = height * ASPECT;
     return { cx: box.x, cy: box.y, width, height };
@@ -280,12 +417,16 @@ function findNearestBox(
   boxes: CanvasBox[],
   worldX: number,
   worldY: number,
-  excludeId: string,
+  excludeIds: string | string[],
+  options?: { excludeKinds?: CanvasBox["kind"][] },
 ) {
+  const excluded = new Set(Array.isArray(excludeIds) ? excludeIds : [excludeIds]);
+  const excludeKinds = new Set(options?.excludeKinds ?? []);
   let nearest: CanvasBox | null = null;
   let best = Number.POSITIVE_INFINITY;
   for (const box of boxes) {
-    if (box.id === excludeId) continue;
+    if (excluded.has(box.id)) continue;
+    if (excludeKinds.has(box.kind)) continue;
     const dist = (box.x - worldX) ** 2 + (box.y - worldY) ** 2;
     if (dist < best) {
       best = dist;
@@ -293,6 +434,21 @@ function findNearestBox(
     }
   }
   return nearest;
+}
+
+/** True if a and b are already linked by any transition, either direction. */
+function boxesAlreadyConnected(
+  transitions: Transition[],
+  aId: string,
+  bId: string,
+  ignoreTransitionId?: string,
+) {
+  return transitions.some((t) => {
+    if (ignoreTransitionId && t.id === ignoreTransitionId) return false;
+    return (
+      (t.fromId === aId && t.toId === bId) || (t.fromId === bId && t.toId === aId)
+    );
+  });
 }
 
 function worldToScreen(
@@ -359,18 +515,28 @@ function anyBoxInViewport(
   );
 }
 
+function comparableName(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function isNameTaken(candidate: string, existingNames: Iterable<string>) {
+  const key = comparableName(candidate);
+  if (!key) return true;
+  for (const name of existingNames) {
+    if (comparableName(name) === key) return true;
+  }
+  return false;
+}
+
 function nextPrefixedName(prefix: string, existingNames: string[]) {
-  const used = new Set(existingNames);
+  const used = new Set(existingNames.map(comparableName));
   let n = 1;
-  while (used.has(`${prefix}${n}`)) n += 1;
+  while (used.has(comparableName(`${prefix}${n}`))) n += 1;
   return `${prefix}${n}`;
 }
 
-function nextVarName(existing: ProjectVariable[]) {
-  return nextPrefixedName(
-    "Var",
-    existing.map((v) => v.name),
-  );
+function nextVarName(existingNames: string[]) {
+  return nextPrefixedName("Var", existingNames);
 }
 
 function nextAnsName(existing: AnswerOption[]) {
@@ -467,12 +633,13 @@ function ConditionsEditor({
           const selectedVar = variables.find(
             (variable) => variable.id === condition.variableId,
           );
-          const isBoolVar = selectedVar?.isBool ?? false;
-          const operatorOptions = isBoolVar
+          const varType = selectedVar?.type ?? "number";
+          const comparisonOnly = isSetOnlyVariableType(varType);
+          const operatorOptions = comparisonOnly
             ? CONDITION_OPERATORS.filter((op) => op.value === "eq" || op.value === "neq")
             : CONDITION_OPERATORS;
           const operatorValue =
-            isBoolVar && condition.operator !== "eq" && condition.operator !== "neq"
+            comparisonOnly && condition.operator !== "eq" && condition.operator !== "neq"
               ? "eq"
               : condition.operator;
 
@@ -509,19 +676,16 @@ function ConditionsEditor({
                     onChange={(e) => {
                       const variableId = e.target.value;
                       const nextVar = variables.find((v) => v.id === variableId);
+                      const nextType = nextVar?.type ?? "number";
                       onUpdateCondition(condition.id, {
                         variableId,
                         operator:
-                          nextVar?.isBool &&
+                          isSetOnlyVariableType(nextType) &&
                           condition.operator !== "eq" &&
                           condition.operator !== "neq"
                             ? "eq"
                             : condition.operator,
-                        value: nextVar?.isBool
-                          ? condition.value !== 0
-                            ? 1
-                            : 0
-                          : condition.value,
+                        value: coerceValueForType(nextType, condition.value),
                       });
                     }}
                     className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
@@ -532,7 +696,7 @@ function ConditionsEditor({
                     {variables.map((variable) => (
                       <option key={variable.id} value={variable.id}>
                         {variable.name}
-                        {variable.isBool ? " (bool)" : ""}
+                        {variableTypeLabel(variable.type)}
                       </option>
                     ))}
                   </select>
@@ -566,11 +730,11 @@ function ConditionsEditor({
                     ))}
                   </select>
 
-                  {isBoolVar ? (
+                  {varType === "bool" ? (
                     <label className="flex shrink-0 items-center gap-1 text-xs text-black/70">
                       <input
                         type="checkbox"
-                        checked={condition.value !== 0}
+                        checked={condition.value !== 0 && condition.value !== "0"}
                         aria-label="Boolean compare value"
                         onChange={(e) => {
                           onCheckpoint();
@@ -580,13 +744,26 @@ function ConditionsEditor({
                         }}
                         className="cursor-pointer"
                       />
-                      <span>{condition.value !== 0 ? "true" : "false"}</span>
+                      <span>
+                        {condition.value !== 0 && condition.value !== "0" ? "true" : "false"}
+                      </span>
                     </label>
+                  ) : varType === "string" ? (
+                    <input
+                      type="text"
+                      value={typeof condition.value === "string" ? condition.value : ""}
+                      aria-label="Condition text"
+                      onFocus={onCheckpoint}
+                      onChange={(e) =>
+                        onUpdateCondition(condition.id, { value: e.target.value })
+                      }
+                      className="min-w-0 w-24 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
+                    />
                   ) : (
                     <input
                       type="number"
                       step="any"
-                      value={condition.value}
+                      value={typeof condition.value === "number" ? condition.value : 0}
                       aria-label="Condition amount"
                       onFocus={onCheckpoint}
                       onChange={(e) => {
@@ -644,8 +821,9 @@ function EffectsEditor({
           const selectedVar = variables.find(
             (variable) => variable.id === effect.variableId,
           );
-          const isBoolVar = selectedVar?.isBool ?? false;
-          const operationOptions = isBoolVar
+          const varType = selectedVar?.type ?? "number";
+          const setOnly = isSetOnlyVariableType(varType);
+          const operationOptions = setOnly
             ? EFFECT_OPERATIONS.filter((op) => op.value === "set")
             : EFFECT_OPERATIONS;
 
@@ -664,17 +842,14 @@ function EffectsEditor({
                   onChange={(e) => {
                     const variableId = e.target.value;
                     const nextVar = variables.find((v) => v.id === variableId);
+                    const nextType = nextVar?.type ?? "number";
                     onUpdateEffect(effect.id, {
                       variableId,
                       operation:
-                        nextVar?.isBool && effect.operation !== "set"
+                        isSetOnlyVariableType(nextType) && effect.operation !== "set"
                           ? "set"
                           : effect.operation,
-                      value: nextVar?.isBool
-                        ? effect.value !== 0
-                          ? 1
-                          : 0
-                        : effect.value,
+                      value: coerceValueForType(nextType, effect.value),
                     });
                   }}
                   className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
@@ -685,7 +860,7 @@ function EffectsEditor({
                   {variables.map((variable) => (
                     <option key={variable.id} value={variable.id}>
                       {variable.name}
-                      {variable.isBool ? " (bool)" : ""}
+                      {variableTypeLabel(variable.type)}
                     </option>
                   ))}
                 </select>
@@ -703,8 +878,8 @@ function EffectsEditor({
               <div className="flex items-center gap-1.5">
                 <select
                   aria-label="Effect operation"
-                  value={isBoolVar ? "set" : effect.operation}
-                  disabled={isBoolVar}
+                  value={setOnly ? "set" : effect.operation}
+                  disabled={setOnly}
                   onFocus={onCheckpoint}
                   onChange={(e) =>
                     onUpdateEffect(effect.id, {
@@ -720,11 +895,11 @@ function EffectsEditor({
                   ))}
                 </select>
 
-                {isBoolVar ? (
+                {varType === "bool" ? (
                   <label className="flex shrink-0 items-center gap-1 text-xs text-black/70">
                     <input
                       type="checkbox"
-                      checked={effect.value !== 0}
+                      checked={effect.value !== 0 && effect.value !== "0"}
                       aria-label="Boolean set value"
                       onChange={(e) => {
                         onCheckpoint();
@@ -734,13 +909,26 @@ function EffectsEditor({
                       }}
                       className="cursor-pointer"
                     />
-                    <span>{effect.value !== 0 ? "true" : "false"}</span>
+                    <span>
+                      {effect.value !== 0 && effect.value !== "0" ? "true" : "false"}
+                    </span>
                   </label>
+                ) : varType === "string" ? (
+                  <input
+                    type="text"
+                    value={typeof effect.value === "string" ? effect.value : ""}
+                    aria-label="Effect text"
+                    onFocus={onCheckpoint}
+                    onChange={(e) =>
+                      onUpdateEffect(effect.id, { value: e.target.value })
+                    }
+                    className="min-w-0 w-24 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
+                  />
                 ) : (
                   <input
                     type="number"
                     step="any"
-                    value={effect.value}
+                    value={typeof effect.value === "number" ? effect.value : 0}
                     aria-label="Effect amount"
                     onFocus={onCheckpoint}
                     onChange={(e) => {
@@ -867,41 +1055,38 @@ function AnswersEditor({
   );
 }
 
+type QuizSection = {
+  id: string;
+  name: string;
+  localVariables: ProjectVariable[];
+  localDefaultAnswers: AnswerOption[];
+  boxes: CanvasBox[];
+  transitions: Transition[];
+  camera: Camera;
+};
+
 type EditorSnapshot = {
   projectName: string;
-  boxes: CanvasBox[];
   variables: ProjectVariable[];
   defaultAnswers: AnswerOption[];
-  transitions: Transition[];
+  sections: QuizSection[];
+  activeSectionId: string;
   selectedId: string | null;
   selectedTransitionId: string | null;
 };
 
 const MAX_HISTORY = 200;
-const STORAGE_KEY = "dragotoba-quiz-maker:v1";
-const DEFAULT_PROJECT_NAME = "Untitled Quiz";
 
 type PersistedQuiz = {
   version: 1;
+  id: string;
   projectName: string;
-  boxes: CanvasBox[];
+  updatedAt: number;
   variables: ProjectVariable[];
   defaultAnswers: AnswerOption[];
-  transitions: Transition[];
-  camera: Camera;
+  sections: QuizSection[];
+  activeSectionId: string;
 };
-
-function createEmptyQuiz(): PersistedQuiz {
-  return {
-    version: 1,
-    projectName: DEFAULT_PROJECT_NAME,
-    boxes: [],
-    variables: [],
-    defaultAnswers: [createDefaultAnswer()],
-    transitions: [],
-    camera: { x: 0, y: 0, scale: 1 },
-  };
-}
 
 function normalizeCanvasBox(raw: unknown): CanvasBox | null {
   if (!raw || typeof raw !== "object") return null;
@@ -910,13 +1095,27 @@ function normalizeCanvasBox(raw: unknown): CanvasBox | null {
     return null;
   }
 
-  if (box.kind === "transition") {
+  if (box.kind === "transition" || box.kind === "start") {
     return {
       id: box.id,
       x: box.x,
       y: box.y,
-      kind: "transition",
+      kind: box.kind,
       effects: Array.isArray(box.effects) ? (box.effects as AnswerEffect[]) : [],
+    };
+  }
+
+  if (box.kind === "section-changer") {
+    return {
+      id: box.id,
+      x: box.x,
+      y: box.y,
+      kind: "section-changer",
+      effects: Array.isArray(box.effects) ? (box.effects as AnswerEffect[]) : [],
+      targetSection:
+        typeof box.targetSection === "string" && box.targetSection
+          ? box.targetSection
+          : "next",
     };
   }
 
@@ -948,7 +1147,12 @@ function normalizeTransition(raw: unknown): Transition | null {
           id: typeof c.id === "string" ? c.id : crypto.randomUUID(),
           variableId: typeof c.variableId === "string" ? c.variableId : "",
           operator: (typeof c.operator === "string" ? c.operator : "eq") as ConditionOperator,
-          value: typeof c.value === "number" && Number.isFinite(c.value) ? c.value : 0,
+          value:
+            typeof c.value === "string"
+              ? c.value
+              : typeof c.value === "number" && Number.isFinite(c.value)
+                ? c.value
+                : 0,
           join: c.join === "or" ? ("or" as const) : ("and" as const),
         }))
     : [];
@@ -961,63 +1165,143 @@ function normalizeTransition(raw: unknown): Transition | null {
   };
 }
 
-function loadPersistedQuiz(): PersistedQuiz | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw) as Record<string, unknown>;
-    if (!data || data.version !== 1) return null;
+function normalizeSection(raw: unknown): QuizSection | null {
+  if (!raw || typeof raw !== "object") return null;
+  const s = raw as Record<string, unknown>;
+  if (typeof s.id !== "string") return null;
 
-    const cameraRaw =
-      data.camera && typeof data.camera === "object"
-        ? (data.camera as Record<string, unknown>)
-        : null;
-    const camera: Camera = {
+  const cameraRaw =
+    s.camera && typeof s.camera === "object"
+      ? (s.camera as Record<string, unknown>)
+      : null;
+
+  const boxes = ensureStartBlock(
+    Array.isArray(s.boxes)
+      ? s.boxes.map(normalizeCanvasBox).filter((b): b is CanvasBox => b !== null)
+      : [],
+  );
+  const startIds = new Set(
+    boxes.filter((box) => box.kind === "start").map((box) => box.id),
+  );
+  const noOutgoingIds = new Set(
+    boxes
+      .filter((box) => box.kind === "section-changer")
+      .map((box) => box.id),
+  );
+  const transitions = (
+    Array.isArray(s.transitions)
+      ? s.transitions
+          .map(normalizeTransition)
+          .filter((t): t is Transition => t !== null)
+      : []
+  ).filter((t) => !startIds.has(t.toId) && !noOutgoingIds.has(t.fromId));
+
+  return {
+    id: s.id,
+    name:
+      typeof s.name === "string" && s.name.trim()
+        ? s.name
+        : nextSectionName([]),
+    localVariables: Array.isArray(s.localVariables)
+      ? s.localVariables
+          .map(normalizeProjectVariable)
+          .filter((v): v is ProjectVariable => v !== null)
+      : [],
+    localDefaultAnswers: Array.isArray(s.localDefaultAnswers)
+      ? (s.localDefaultAnswers as AnswerOption[])
+      : [],
+    boxes,
+    transitions,
+    camera: {
       x: typeof cameraRaw?.x === "number" ? cameraRaw.x : 0,
       y: typeof cameraRaw?.y === "number" ? cameraRaw.y : 0,
       scale:
         typeof cameraRaw?.scale === "number"
           ? clamp(cameraRaw.scale, MIN_SCALE, MAX_SCALE)
           : 1,
-    };
-
-    const boxes = Array.isArray(data.boxes)
-      ? data.boxes.map(normalizeCanvasBox).filter((b): b is CanvasBox => b !== null)
-      : [];
-    const transitions = Array.isArray(data.transitions)
-      ? data.transitions
-          .map(normalizeTransition)
-          .filter((t): t is Transition => t !== null)
-      : [];
-    const defaultAnswers = Array.isArray(data.defaultAnswers)
-      ? (data.defaultAnswers as AnswerOption[])
-      : [createDefaultAnswer()];
-
-    return {
-      version: 1,
-      projectName:
-        typeof data.projectName === "string" && data.projectName.trim()
-          ? data.projectName
-          : DEFAULT_PROJECT_NAME,
-      boxes,
-      variables: Array.isArray(data.variables)
-        ? (data.variables as ProjectVariable[])
-        : [],
-      defaultAnswers: defaultAnswers.length > 0 ? defaultAnswers : [createDefaultAnswer()],
-      transitions,
-      camera,
-    };
-  } catch {
-    return null;
-  }
+    },
+  };
 }
 
-function savePersistedQuiz(quiz: PersistedQuiz) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(quiz));
-  } catch {
-    // Ignore quota / private-mode failures.
+function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
+  const defaultAnswers = Array.isArray(doc.defaultAnswers)
+    ? (doc.defaultAnswers as AnswerOption[])
+    : [createDefaultAnswer()];
+
+  let sections = Array.isArray(doc.sections)
+    ? doc.sections.map(normalizeSection).filter((s): s is QuizSection => s !== null)
+    : [];
+
+  if (sections.length === 0) {
+    const fallback = emptySection([]) as QuizSection;
+    const boxes = ensureStartBlock(
+      Array.isArray(doc.boxes)
+        ? doc.boxes.map(normalizeCanvasBox).filter((b): b is CanvasBox => b !== null)
+        : [],
+    );
+    const startIds = new Set(
+      boxes.filter((box) => box.kind === "start").map((box) => box.id),
+    );
+    sections = [
+      {
+        ...fallback,
+        name: "Section1",
+        localVariables: Array.isArray(doc.localVariables)
+          ? doc.localVariables
+              .map(normalizeProjectVariable)
+              .filter((v): v is ProjectVariable => v !== null)
+          : [],
+        localDefaultAnswers: [],
+        boxes,
+        transitions: (
+          Array.isArray(doc.transitions)
+            ? doc.transitions
+                .map(normalizeTransition)
+                .filter((t): t is Transition => t !== null)
+            : []
+        ).filter((t) => !startIds.has(t.toId)),
+        camera: { x: 0, y: 0, scale: 1 },
+      },
+    ];
   }
+
+  const activeSectionId = sections.some((s) => s.id === doc.activeSectionId)
+    ? doc.activeSectionId
+    : sections[0].id;
+
+  return {
+    version: 1,
+    id: doc.id,
+    projectName: doc.projectName.trim() ? doc.projectName : DEFAULT_PROJECT_NAME,
+    updatedAt: doc.updatedAt,
+    variables: Array.isArray(doc.variables)
+      ? doc.variables
+          .map(normalizeProjectVariable)
+          .filter((v): v is ProjectVariable => v !== null)
+      : [],
+    defaultAnswers: defaultAnswers.length > 0 ? defaultAnswers : [createDefaultAnswer()],
+    sections,
+    activeSectionId,
+  };
+}
+
+function loadQuizById(id: string): PersistedQuiz | null {
+  const stored = getStoredQuiz(id);
+  if (!stored) return null;
+  return parseStoredQuiz(stored);
+}
+
+function persistQuiz(quiz: PersistedQuiz) {
+  saveStoredQuiz({
+    version: 1,
+    id: quiz.id,
+    projectName: quiz.projectName,
+    updatedAt: quiz.updatedAt,
+    variables: quiz.variables,
+    defaultAnswers: quiz.defaultAnswers,
+    sections: quiz.sections,
+    activeSectionId: quiz.activeSectionId,
+  });
 }
 
 function cloneSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
@@ -1025,14 +1309,38 @@ function cloneSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
 }
 
 export default function CreateQuiz() {
-  const [initialQuiz] = useState(() => loadPersistedQuiz() ?? createEmptyQuiz());
+  const { quizId } = useParams<{ quizId: string }>();
+  if (!quizId) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  const initialQuiz = loadQuizById(quizId);
+  if (!initialQuiz) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return <CreateQuizEditor key={initialQuiz.id} initialQuiz={initialQuiz} />;
+}
+
+function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
+  const initialSection =
+    initialQuiz.sections.find((s) => s.id === initialQuiz.activeSectionId) ??
+    initialQuiz.sections[0];
+
+  const quizIdRef = useRef(initialQuiz.id);
   const viewportRef = useRef<HTMLElement>(null);
   const varNameRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+  const localVarNameRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const ansNameRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const defaultAnsNameRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+  const localDefaultAnsNameRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const [projectName, setProjectName] = useState(initialQuiz.projectName);
-  const [boxes, setBoxes] = useState<CanvasBox[]>(initialQuiz.boxes);
-  const [camera, setCamera] = useState<Camera>(initialQuiz.camera);
+  const [sectionName, setSectionName] = useState(initialSection.name);
+  const [settingsPane, setSettingsPane] = useState<"project" | "section">("project");
+  const [sections, setSections] = useState<QuizSection[]>(initialQuiz.sections);
+  const [activeSectionId, setActiveSectionId] = useState(initialSection.id);
+  const [boxes, setBoxes] = useState<CanvasBox[]>(initialSection.boxes);
+  const [camera, setCamera] = useState<Camera>(initialSection.camera);
   const [menu, setMenu] = useState<ContextMenuState>(null);
   const [dragKind, setDragKind] = useState<"pan" | "box" | null>(null);
   const [draggingBoxId, setDraggingBoxId] = useState<string | null>(null);
@@ -1040,31 +1348,49 @@ export default function CreateQuiz() {
   const [selectedTransitionId, setSelectedTransitionId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [variables, setVariables] = useState<ProjectVariable[]>(initialQuiz.variables);
+  const [localVariables, setLocalVariables] = useState<ProjectVariable[]>(
+    initialSection.localVariables,
+  );
   const [defaultAnswers, setDefaultAnswers] = useState<AnswerOption[]>(
     initialQuiz.defaultAnswers,
   );
-  const [transitions, setTransitions] = useState<Transition[]>(initialQuiz.transitions);
+  const [localDefaultAnswers, setLocalDefaultAnswers] = useState<AnswerOption[]>(
+    initialSection.localDefaultAnswers,
+  );
+  const [transitions, setTransitions] = useState<Transition[]>(initialSection.transitions);
   const [transitionDraft, setTransitionDraft] = useState<TransitionDraft | null>(null);
   const [focusVarId, setFocusVarId] = useState<string | null>(null);
+  const [focusLocalVarId, setFocusLocalVarId] = useState<string | null>(null);
   const [focusAnsId, setFocusAnsId] = useState<string | null>(null);
   const [focusDefaultAnsId, setFocusDefaultAnsId] = useState<string | null>(null);
+  const [focusLocalDefaultAnsId, setFocusLocalDefaultAnsId] = useState<string | null>(null);
   const menuId = useId();
 
   const cameraRef = useRef(camera);
   cameraRef.current = camera;
 
   const projectNameRef = useRef(projectName);
+  const sectionNameRef = useRef(sectionName);
+  const sectionsRef = useRef(sections);
+  const activeSectionIdRef = useRef(activeSectionId);
   const boxesRef = useRef(boxes);
   const variablesRef = useRef(variables);
+  const localVariablesRef = useRef(localVariables);
   const defaultAnswersRef = useRef(defaultAnswers);
+  const localDefaultAnswersRef = useRef(localDefaultAnswers);
   const transitionsRef = useRef(transitions);
   const selectedIdRef = useRef(selectedId);
   const selectedTransitionIdRef = useRef(selectedTransitionId);
   const transitionDraftRef = useRef(transitionDraft);
   projectNameRef.current = projectName;
+  sectionNameRef.current = sectionName;
+  sectionsRef.current = sections;
+  activeSectionIdRef.current = activeSectionId;
   boxesRef.current = boxes;
   variablesRef.current = variables;
+  localVariablesRef.current = localVariables;
   defaultAnswersRef.current = defaultAnswers;
+  localDefaultAnswersRef.current = localDefaultAnswers;
   transitionsRef.current = transitions;
   selectedIdRef.current = selectedId;
   selectedTransitionIdRef.current = selectedTransitionId;
@@ -1086,30 +1412,68 @@ export default function CreateQuiz() {
 
   const selectedBox = boxes.find((b) => b.id === selectedId) ?? null;
   const selectedQuestion = selectedBox?.kind === "question" ? selectedBox : null;
-  const selectedTransitionBlock =
-    selectedBox?.kind === "transition" ? selectedBox : null;
+  const selectedEffectBlock =
+    selectedBox && isEffectBlock(selectedBox) ? selectedBox : null;
   const selectedTransition =
     transitions.find((t) => t.id === selectedTransitionId) ?? null;
+  const allVariables = [...variables, ...localVariables];
+
+  function getSectionsWithActive(): QuizSection[] {
+    return sectionsRef.current.map((section) =>
+      section.id === activeSectionIdRef.current
+        ? {
+            ...section,
+            name: sectionNameRef.current,
+            localVariables: localVariablesRef.current,
+            localDefaultAnswers: localDefaultAnswersRef.current,
+            boxes: boxesRef.current,
+            transitions: transitionsRef.current,
+            camera: cameraRef.current,
+          }
+        : section,
+    );
+  }
+
+  function loadSection(section: QuizSection) {
+    sectionNameRef.current = section.name;
+    localVariablesRef.current = section.localVariables;
+    localDefaultAnswersRef.current = section.localDefaultAnswers;
+    boxesRef.current = section.boxes;
+    transitionsRef.current = section.transitions;
+    cameraRef.current = section.camera;
+    setSectionName(section.name);
+    setLocalVariables(section.localVariables);
+    setLocalDefaultAnswers(section.localDefaultAnswers);
+    setBoxes(section.boxes);
+    setTransitions(section.transitions);
+    setCamera(section.camera);
+    setSelectedId(null);
+    setSelectedTransitionId(null);
+    setTransitionDraft(null);
+    setMenu(null);
+  }
 
   function getPersistedQuiz(): PersistedQuiz {
+    const mergedSections = getSectionsWithActive();
     return {
       version: 1,
+      id: quizIdRef.current,
       projectName: projectNameRef.current,
-      boxes: boxesRef.current,
+      updatedAt: Date.now(),
       variables: variablesRef.current,
       defaultAnswers: defaultAnswersRef.current,
-      transitions: transitionsRef.current,
-      camera: cameraRef.current,
+      sections: mergedSections,
+      activeSectionId: activeSectionIdRef.current,
     };
   }
 
   function getSnapshot(): EditorSnapshot {
     return {
       projectName: projectNameRef.current,
-      boxes: boxesRef.current,
       variables: variablesRef.current,
       defaultAnswers: defaultAnswersRef.current,
-      transitions: transitionsRef.current,
+      sections: getSectionsWithActive(),
+      activeSectionId: activeSectionIdRef.current,
       selectedId: selectedIdRef.current,
       selectedTransitionId: selectedTransitionIdRef.current,
     };
@@ -1118,23 +1482,53 @@ export default function CreateQuiz() {
   function applySnapshot(snapshot: EditorSnapshot) {
     applyingHistoryRef.current = true;
     const next = cloneSnapshot(snapshot);
+    const active =
+      next.sections.find((s) => s.id === next.activeSectionId) ?? next.sections[0];
     projectNameRef.current = next.projectName;
-    boxesRef.current = next.boxes;
     variablesRef.current = next.variables;
     defaultAnswersRef.current = next.defaultAnswers;
-    transitionsRef.current = next.transitions;
+    sectionsRef.current = next.sections;
+    activeSectionIdRef.current = active.id;
     selectedIdRef.current = next.selectedId;
     selectedTransitionIdRef.current = next.selectedTransitionId;
     setProjectName(next.projectName);
-    setBoxes(next.boxes);
     setVariables(next.variables);
     setDefaultAnswers(next.defaultAnswers);
-    setTransitions(next.transitions);
+    setSections(next.sections);
+    setActiveSectionId(active.id);
+    loadSection(active);
     setSelectedId(next.selectedId);
     setSelectedTransitionId(next.selectedTransitionId);
     queueMicrotask(() => {
       applyingHistoryRef.current = false;
     });
+  }
+
+  function selectSection(sectionId: string) {
+    if (sectionId === activeSectionIdRef.current) return;
+    const merged = getSectionsWithActive();
+    const next = merged.find((s) => s.id === sectionId);
+    if (!next) return;
+    pushHistory();
+    sectionsRef.current = merged;
+    setSections(merged);
+    activeSectionIdRef.current = next.id;
+    setActiveSectionId(next.id);
+    loadSection(next);
+  }
+
+  function createSection() {
+    pushHistory();
+    const merged = getSectionsWithActive();
+    const created = emptySection(merged.map((s) => s.name)) as QuizSection;
+    const nextSections = [...merged, created];
+    sectionsRef.current = nextSections;
+    setSections(nextSections);
+    activeSectionIdRef.current = created.id;
+    setActiveSectionId(created.id);
+    loadSection(created);
+    setSettingsPane("section");
+    setSettingsOpen(true);
   }
 
   function pushHistory(snapshot = getSnapshot()) {
@@ -1165,13 +1559,13 @@ export default function CreateQuiz() {
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
-      savePersistedQuiz(getPersistedQuiz());
+      persistQuiz(getPersistedQuiz());
     }, 200);
     return () => window.clearTimeout(timeoutId);
-  }, [projectName, boxes, variables, defaultAnswers, transitions, camera]);
+  }, [projectName, sectionName, sections, activeSectionId, boxes, variables, localVariables, defaultAnswers, localDefaultAnswers, transitions, camera]);
 
   useEffect(() => {
-    const flush = () => savePersistedQuiz(getPersistedQuiz());
+    const flush = () => persistQuiz(getPersistedQuiz());
     window.addEventListener("beforeunload", flush);
     window.addEventListener("pagehide", flush);
     return () => {
@@ -1209,6 +1603,15 @@ export default function CreateQuiz() {
   }, [focusVarId, variables]);
 
   useEffect(() => {
+    if (!focusLocalVarId) return;
+    const input = localVarNameRefs.current.get(focusLocalVarId);
+    if (!input) return;
+    input.focus();
+    input.select();
+    setFocusLocalVarId(null);
+  }, [focusLocalVarId, localVariables]);
+
+  useEffect(() => {
     if (!focusAnsId || !selectedQuestion) return;
     const input = ansNameRefs.current.get(focusAnsId);
     if (!input) return;
@@ -1225,6 +1628,15 @@ export default function CreateQuiz() {
     input.select();
     setFocusDefaultAnsId(null);
   }, [focusDefaultAnsId, defaultAnswers]);
+
+  useEffect(() => {
+    if (!focusLocalDefaultAnsId) return;
+    const input = localDefaultAnsNameRefs.current.get(focusLocalDefaultAnsId);
+    if (!input) return;
+    input.focus();
+    input.select();
+    setFocusLocalDefaultAnsId(null);
+  }, [focusLocalDefaultAnsId, localDefaultAnswers]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1504,7 +1916,7 @@ export default function CreateQuiz() {
         y: menu.worldY,
         kind: "question",
         question: "",
-        answers: cloneAnswersWithNewIds(defaultAnswersRef.current),
+        answers: cloneAnswersWithNewIds(localDefaultAnswersRef.current),
       },
     ]);
     setSelectedId(id);
@@ -1531,40 +1943,89 @@ export default function CreateQuiz() {
     setMenu(null);
   }
 
+  function createStartBlockAtMenu() {
+    if (!menu || menu.kind !== "canvas") return;
+    if (boxesRef.current.some((box) => box.kind === "start")) {
+      setMenu(null);
+      return;
+    }
+    pushHistory();
+    const block = createStartBlock(menu.worldX, menu.worldY);
+    setBoxes((prev) => [...prev, block]);
+    setSelectedId(block.id);
+    setSelectedTransitionId(null);
+    setMenu(null);
+  }
+
+  function createSectionChangerAtMenu() {
+    if (!menu || menu.kind !== "canvas") return;
+    pushHistory();
+    const block = createSectionChangerBlock(menu.worldX, menu.worldY);
+    setBoxes((prev) => [...prev, block]);
+    setSelectedId(block.id);
+    setSelectedTransitionId(null);
+    setMenu(null);
+  }
+
+  function updateSectionChangerTarget(targetSection: "next" | string) {
+    if (!selectedId) return;
+    pushHistory();
+    setBoxes((prev) =>
+      prev.map((box) =>
+        box.id === selectedId && box.kind === "section-changer"
+          ? { ...box, targetSection }
+          : box,
+      ),
+    );
+  }
+
   function duplicateQuestion() {
     if (!menu || menu.kind !== "box") return;
     const sourceId = menu.boxId;
     const source = boxesRef.current.find((box) => box.id === sourceId);
-    if (!source) return;
+    if (!source || source.kind === "start") return;
 
     pushHistory();
     const id = crypto.randomUUID();
-    const copy: CanvasBox =
-      source.kind === "question"
-        ? {
-            ...structuredClone(source),
-            id,
-            x: source.x + DUPLICATE_OFFSET,
-            y: source.y + DUPLICATE_OFFSET,
-            answers: source.answers.map((answer) => ({
-              ...answer,
-              id: crypto.randomUUID(),
-              effects: answer.effects.map((effect) => ({
-                ...effect,
-                id: crypto.randomUUID(),
-              })),
-            })),
-          }
-        : {
-            ...structuredClone(source),
-            id,
-            x: source.x + DUPLICATE_OFFSET,
-            y: source.y + DUPLICATE_OFFSET,
-            effects: source.effects.map((effect) => ({
-              ...effect,
-              id: crypto.randomUUID(),
-            })),
-          };
+    let copy: CanvasBox;
+    if (source.kind === "question") {
+      copy = {
+        ...structuredClone(source),
+        id,
+        x: source.x + DUPLICATE_OFFSET,
+        y: source.y + DUPLICATE_OFFSET,
+        answers: source.answers.map((answer) => ({
+          ...answer,
+          id: crypto.randomUUID(),
+          effects: answer.effects.map((effect) => ({
+            ...effect,
+            id: crypto.randomUUID(),
+          })),
+        })),
+      };
+    } else if (source.kind === "section-changer") {
+      copy = {
+        ...structuredClone(source),
+        id,
+        x: source.x + DUPLICATE_OFFSET,
+        y: source.y + DUPLICATE_OFFSET,
+        effects: source.effects.map((effect) => ({
+          ...effect,
+          id: crypto.randomUUID(),
+        })),
+      };
+    } else {
+      copy = {
+        ...structuredClone(source),
+        id,
+        x: source.x + DUPLICATE_OFFSET,
+        y: source.y + DUPLICATE_OFFSET,
+        effects: source.effects.map((effect) => ({
+          ...effect,
+          id: crypto.randomUUID(),
+        })),
+      };
+    }
     setBoxes((prev) => [...prev, copy]);
     setSelectedId(id);
     setSelectedTransitionId(null);
@@ -1594,13 +2055,83 @@ export default function CreateQuiz() {
   function makeTransition() {
     if (!menu || menu.kind !== "box") return;
     const fromId = menu.boxId;
+    const fromBox = boxesRef.current.find((box) => box.id === fromId);
+    if (!fromBox || fromBox.kind === "section-changer") return;
     const local = {
       x: menu.screenX - (viewportRef.current?.getBoundingClientRect().left ?? 0),
       y: menu.screenY - (viewportRef.current?.getBoundingClientRect().top ?? 0),
     };
     const world = screenToWorld(local.x, local.y, camera);
     setTransitionDraft({
+      kind: "create",
       fromId,
+      mouseX: world.x,
+      mouseY: world.y,
+    });
+    setMenu(null);
+  }
+
+  function onTransitionContextMenu(
+    e: React.MouseEvent<SVGGElement>,
+    transitionId: string,
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedTransitionId(transitionId);
+    setSelectedId(null);
+    setMenu({
+      kind: "transition",
+      screenX: e.clientX,
+      screenY: e.clientY,
+      transitionId,
+    });
+  }
+
+  function deleteTransition() {
+    if (!menu || menu.kind !== "transition") return;
+    const transitionId = menu.transitionId;
+    pushHistory();
+    setTransitions((prev) => prev.filter((t) => t.id !== transitionId));
+    setSelectedTransitionId((current) => (current === transitionId ? null : current));
+    setMenu(null);
+  }
+
+  function beginChangeTransitionOrigin() {
+    if (!menu || menu.kind !== "transition") return;
+    const transition = transitionsRef.current.find((t) => t.id === menu.transitionId);
+    if (!transition) return;
+    const local = {
+      x: menu.screenX - (viewportRef.current?.getBoundingClientRect().left ?? 0),
+      y: menu.screenY - (viewportRef.current?.getBoundingClientRect().top ?? 0),
+    };
+    const world = screenToWorld(local.x, local.y, camera);
+    setSelectedTransitionId(transition.id);
+    setSelectedId(null);
+    setTransitionDraft({
+      kind: "retarget-origin",
+      transitionId: transition.id,
+      toId: transition.toId,
+      mouseX: world.x,
+      mouseY: world.y,
+    });
+    setMenu(null);
+  }
+
+  function beginChangeTransitionDestination() {
+    if (!menu || menu.kind !== "transition") return;
+    const transition = transitionsRef.current.find((t) => t.id === menu.transitionId);
+    if (!transition) return;
+    const local = {
+      x: menu.screenX - (viewportRef.current?.getBoundingClientRect().left ?? 0),
+      y: menu.screenY - (viewportRef.current?.getBoundingClientRect().top ?? 0),
+    };
+    const world = screenToWorld(local.x, local.y, camera);
+    setSelectedTransitionId(transition.id);
+    setSelectedId(null);
+    setTransitionDraft({
+      kind: "retarget-destination",
+      transitionId: transition.id,
+      fromId: transition.fromId,
       mouseX: world.x,
       mouseY: world.y,
     });
@@ -1610,26 +2141,78 @@ export default function CreateQuiz() {
   function completeTransitionAt(worldX: number, worldY: number) {
     const draft = transitionDraftRef.current;
     if (!draft) return;
-
-    const target = findNearestBox(boxesRef.current, worldX, worldY, draft.fromId);
     setTransitionDraft(null);
+
+    if (draft.kind === "create" || draft.kind === "retarget-destination") {
+      const fromBox = boxesRef.current.find((box) => box.id === draft.fromId);
+      if (!fromBox || fromBox.kind === "section-changer") return;
+
+      const target = findNearestBox(boxesRef.current, worldX, worldY, draft.fromId, {
+        excludeKinds: ["start"],
+      });
+      if (!target) return;
+
+      if (draft.kind === "create") {
+        if (boxesAlreadyConnected(transitionsRef.current, draft.fromId, target.id)) {
+          return;
+        }
+        pushHistory();
+        setTransitions((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            fromId: draft.fromId,
+            toId: target.id,
+            conditions: [],
+          },
+        ]);
+        return;
+      }
+
+      if (
+        boxesAlreadyConnected(
+          transitionsRef.current,
+          draft.fromId,
+          target.id,
+          draft.transitionId,
+        )
+      ) {
+        return;
+      }
+      if (target.id === draft.fromId) return;
+
+      pushHistory();
+      setTransitions((prev) =>
+        prev.map((t) =>
+          t.id === draft.transitionId ? { ...t, toId: target.id } : t,
+        ),
+      );
+      return;
+    }
+
+    // retarget-origin
+    const target = findNearestBox(boxesRef.current, worldX, worldY, draft.toId, {
+      excludeKinds: ["section-changer"],
+    });
     if (!target) return;
 
-    const alreadyExists = transitionsRef.current.some(
-      (t) => t.fromId === draft.fromId && t.toId === target.id,
-    );
-    if (alreadyExists) return;
+    if (
+      boxesAlreadyConnected(
+        transitionsRef.current,
+        target.id,
+        draft.toId,
+        draft.transitionId,
+      )
+    ) {
+      return;
+    }
 
     pushHistory();
-    setTransitions((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        fromId: draft.fromId,
-        toId: target.id,
-        conditions: [],
-      },
-    ]);
+    setTransitions((prev) =>
+      prev.map((t) =>
+        t.id === draft.transitionId ? { ...t, fromId: target.id } : t,
+      ),
+    );
   }
   completeTransitionAtRef.current = completeTransitionAt;
 
@@ -1642,7 +2225,8 @@ export default function CreateQuiz() {
   function addTransitionCondition() {
     if (!selectedTransitionId) return;
     pushHistory();
-    const defaultVarId = variablesRef.current[0]?.id ?? "";
+    const defaultVarId =
+      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
     setTransitions((prev) =>
       prev.map((transition) =>
         transition.id === selectedTransitionId
@@ -1759,7 +2343,8 @@ export default function CreateQuiz() {
   function addEffect(answerId: string) {
     if (!selectedId) return;
     pushHistory();
-    const defaultVarId = variablesRef.current[0]?.id ?? "";
+    const defaultVarId =
+      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
     setBoxes((prev) =>
       prev.map((box) => {
         if (box.id !== selectedId || box.kind !== "question") return box;
@@ -1827,10 +2412,11 @@ export default function CreateQuiz() {
   function addBlockEffect() {
     if (!selectedId) return;
     pushHistory();
-    const defaultVarId = variablesRef.current[0]?.id ?? "";
+    const defaultVarId =
+      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
     setBoxes((prev) =>
       prev.map((box) =>
-        box.id === selectedId && box.kind === "transition"
+        box.id === selectedId && isEffectBlock(box)
           ? {
               ...box,
               effects: [...box.effects, createDefaultEffect(defaultVarId)],
@@ -1844,7 +2430,7 @@ export default function CreateQuiz() {
     if (!selectedId) return;
     setBoxes((prev) =>
       prev.map((box) => {
-        if (box.id !== selectedId || box.kind !== "transition") return box;
+        if (box.id !== selectedId || !isEffectBlock(box)) return box;
         return {
           ...box,
           effects: box.effects.map((effect) =>
@@ -1860,7 +2446,7 @@ export default function CreateQuiz() {
     pushHistory();
     setBoxes((prev) =>
       prev.map((box) =>
-        box.id === selectedId && box.kind === "transition"
+        box.id === selectedId && isEffectBlock(box)
           ? {
               ...box,
               effects: box.effects.filter((effect) => effect.id !== effectId),
@@ -1870,19 +2456,40 @@ export default function CreateQuiz() {
     );
   }
 
+  const nameEditBaselineRef = useRef<string>("");
+
+  function collectLocalVariableNames(): string[] {
+    const names: string[] = [];
+    for (const section of sectionsRef.current) {
+      const locals =
+        section.id === activeSectionIdRef.current
+          ? localVariablesRef.current
+          : section.localVariables;
+      for (const variable of locals) {
+        names.push(variable.name);
+      }
+    }
+    return names;
+  }
+
   function addVariable() {
     pushHistory();
     const id = crypto.randomUUID();
+    const reserved = [
+      ...variablesRef.current.map((variable) => variable.name),
+      ...collectLocalVariableNames(),
+    ];
     setVariables((prev) => [
       ...prev,
       {
         id,
-        name: nextVarName(prev),
-        isBool: false,
+        name: nextVarName(reserved),
+        type: "number",
         value: 0,
       },
     ]);
     setSettingsOpen(true);
+    setSettingsPane("project");
     setFocusVarId(id);
   }
 
@@ -1892,9 +2499,110 @@ export default function CreateQuiz() {
     );
   }
 
+  function commitVariableName(id: string) {
+    const variable = variablesRef.current.find((item) => item.id === id);
+    if (!variable) return;
+    const previous = nameEditBaselineRef.current;
+    const trimmed = variable.name.trim();
+    const reserved = [
+      ...variablesRef.current
+        .filter((item) => item.id !== id)
+        .map((item) => item.name),
+      ...collectLocalVariableNames(),
+    ];
+    if (isNameTaken(trimmed, reserved)) {
+      if (variable.name !== previous) {
+        setVariables((prev) =>
+          prev.map((item) => (item.id === id ? { ...item, name: previous } : item)),
+        );
+      }
+      return;
+    }
+    if (variable.name !== trimmed) {
+      setVariables((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item)),
+      );
+    }
+  }
+
   function removeVariable(id: string) {
     pushHistory();
     setVariables((prev) => prev.filter((variable) => variable.id !== id));
+  }
+
+  function addLocalVariable() {
+    pushHistory();
+    const id = crypto.randomUUID();
+    const reserved = [
+      ...variablesRef.current.map((variable) => variable.name),
+      ...localVariablesRef.current.map((variable) => variable.name),
+    ];
+    setLocalVariables((prev) => [
+      ...prev,
+      {
+        id,
+        name: nextVarName(reserved),
+        type: "number",
+        value: 0,
+      },
+    ]);
+    setSettingsOpen(true);
+    setSettingsPane("section");
+    setFocusLocalVarId(id);
+  }
+
+  function updateLocalVariable(id: string, patch: Partial<ProjectVariable>) {
+    setLocalVariables((prev) =>
+      prev.map((variable) => (variable.id === id ? { ...variable, ...patch } : variable)),
+    );
+  }
+
+  function commitLocalVariableName(id: string) {
+    const variable = localVariablesRef.current.find((item) => item.id === id);
+    if (!variable) return;
+    const previous = nameEditBaselineRef.current;
+    const trimmed = variable.name.trim();
+    const reserved = [
+      ...variablesRef.current.map((item) => item.name),
+      ...localVariablesRef.current
+        .filter((item) => item.id !== id)
+        .map((item) => item.name),
+    ];
+    if (isNameTaken(trimmed, reserved)) {
+      if (variable.name !== previous) {
+        setLocalVariables((prev) =>
+          prev.map((item) => (item.id === id ? { ...item, name: previous } : item)),
+        );
+      }
+      return;
+    }
+    if (variable.name !== trimmed) {
+      setLocalVariables((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, name: trimmed } : item)),
+      );
+    }
+  }
+
+  function removeLocalVariable(id: string) {
+    pushHistory();
+    setLocalVariables((prev) => prev.filter((variable) => variable.id !== id));
+  }
+
+  function commitSectionName() {
+    const previous = nameEditBaselineRef.current;
+    const trimmed = sectionNameRef.current.trim();
+    const reserved = sectionsRef.current
+      .filter((section) => section.id !== activeSectionIdRef.current)
+      .map((section) => section.name);
+    if (isNameTaken(trimmed, reserved)) {
+      if (sectionNameRef.current !== previous) {
+        setSectionName(previous);
+      }
+      return;
+    }
+    if (sectionNameRef.current !== trimmed) {
+      setSectionName(trimmed);
+    }
   }
 
   function addDefaultAnswer() {
@@ -1924,7 +2632,8 @@ export default function CreateQuiz() {
 
   function addDefaultEffect(answerId: string) {
     pushHistory();
-    const defaultVarId = variablesRef.current[0]?.id ?? "";
+    const defaultVarId =
+      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
     setDefaultAnswers((prev) =>
       prev.map((answer) =>
         answer.id === answerId
@@ -1969,6 +2678,83 @@ export default function CreateQuiz() {
     );
   }
 
+  function addLocalDefaultAnswer() {
+    pushHistory();
+    const id = crypto.randomUUID();
+    setLocalDefaultAnswers((prev) => [
+      ...prev,
+      {
+        id,
+        name: nextAnsName(prev),
+        effects: [],
+      },
+    ]);
+    setFocusLocalDefaultAnsId(id);
+  }
+
+  function updateLocalDefaultAnswer(answerId: string, patch: Partial<AnswerOption>) {
+    setLocalDefaultAnswers((prev) =>
+      prev.map((answer) => (answer.id === answerId ? { ...answer, ...patch } : answer)),
+    );
+  }
+
+  function removeLocalDefaultAnswer(answerId: string) {
+    pushHistory();
+    setLocalDefaultAnswers((prev) => prev.filter((answer) => answer.id !== answerId));
+  }
+
+  function addLocalDefaultEffect(answerId: string) {
+    pushHistory();
+    const defaultVarId =
+      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
+    setLocalDefaultAnswers((prev) =>
+      prev.map((answer) =>
+        answer.id === answerId
+          ? {
+              ...answer,
+              effects: [...answer.effects, createDefaultEffect(defaultVarId)],
+            }
+          : answer,
+      ),
+    );
+  }
+
+  function updateLocalDefaultEffect(
+    answerId: string,
+    effectId: string,
+    patch: Partial<AnswerEffect>,
+  ) {
+    setLocalDefaultAnswers((prev) =>
+      prev.map((answer) => {
+        if (answer.id !== answerId) return answer;
+        return {
+          ...answer,
+          effects: answer.effects.map((effect) =>
+            effect.id === effectId ? { ...effect, ...patch } : effect,
+          ),
+        };
+      }),
+    );
+  }
+
+  function removeLocalDefaultEffect(answerId: string, effectId: string) {
+    pushHistory();
+    setLocalDefaultAnswers((prev) =>
+      prev.map((answer) =>
+        answer.id === answerId
+          ? {
+              ...answer,
+              effects: answer.effects.filter((effect) => effect.id !== effectId),
+            }
+          : answer,
+      ),
+    );
+  }
+
+  const sectionList = sections.map((section) =>
+    section.id === activeSectionId ? { ...section, name: sectionName } : section,
+  );
+
   const cursorClass =
     dragKind === "pan"
       ? "cursor-grabbing"
@@ -1978,6 +2764,32 @@ export default function CreateQuiz() {
 
   return (
     <div className="relative h-screen w-full overflow-hidden bg-white">
+      <div
+        className="pointer-events-none absolute top-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <select
+          aria-label="Active section"
+          value={activeSectionId}
+          onChange={(e) => selectSection(e.target.value)}
+          className="pointer-events-auto max-w-[220px] cursor-pointer rounded-md border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black shadow-sm outline-none focus:border-[#2f5d76]"
+        >
+          {sectionList.map((section) => (
+            <option key={section.id} value={section.id}>
+              {section.name.trim() || "Untitled Section"}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          aria-label="Create section"
+          onClick={createSection}
+          className="pointer-events-auto flex h-9 w-9 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-white text-lg leading-none text-black shadow-sm hover:bg-[#f5f5f5]"
+        >
+          +
+        </button>
+      </div>
+
       <main
         ref={viewportRef}
         className={`absolute inset-0 touch-none overflow-hidden bg-white select-none ${
@@ -2041,6 +2853,7 @@ export default function CreateQuiz() {
                     e.stopPropagation();
                     selectTransition(transition.id);
                   }}
+                  onContextMenu={(e) => onTransitionContextMenu(e, transition.id)}
                 >
                   <line
                     x1={fromRect.cx}
@@ -2069,6 +2882,29 @@ export default function CreateQuiz() {
 
             {transitionDraft &&
               (() => {
+                if (transitionDraft.kind === "retarget-origin") {
+                  const to = boxes.find((box) => box.id === transitionDraft.toId);
+                  if (!to) return null;
+                  const toRect = boxRect(to);
+                  const end = edgePointFacing(
+                    toRect,
+                    transitionDraft.mouseX,
+                    transitionDraft.mouseY,
+                  );
+                  return (
+                    <line
+                      x1={transitionDraft.mouseX}
+                      y1={transitionDraft.mouseY}
+                      x2={end.x}
+                      y2={end.y}
+                      stroke="#2f5d76"
+                      strokeWidth={1.5}
+                      strokeDasharray="6 4"
+                      markerEnd="url(#transition-arrowhead-selected)"
+                    />
+                  );
+                }
+
                 const from = boxes.find((box) => box.id === transitionDraft.fromId);
                 if (!from) return null;
                 const fromRect = boxRect(from);
@@ -2078,9 +2914,18 @@ export default function CreateQuiz() {
                     y1={fromRect.cy}
                     x2={transitionDraft.mouseX}
                     y2={transitionDraft.mouseY}
-                    stroke="#000000"
+                    stroke={
+                      transitionDraft.kind === "retarget-destination" ? "#2f5d76" : "#000000"
+                    }
                     strokeWidth={1.5}
-                    markerEnd="url(#transition-arrowhead)"
+                    strokeDasharray={
+                      transitionDraft.kind === "retarget-destination" ? "6 4" : undefined
+                    }
+                    markerEnd={
+                      transitionDraft.kind === "retarget-destination"
+                        ? "url(#transition-arrowhead-selected)"
+                        : "url(#transition-arrowhead)"
+                    }
                   />
                 );
               })()}
@@ -2088,23 +2933,36 @@ export default function CreateQuiz() {
 
           {boxes.map((box) => {
             const selected = selectedId === box.id;
-            const isTransitionBlock = box.kind === "transition";
-            const { width, height, lines } = isTransitionBlock
+            const isFixedLabelBlock = isEffectBlock(box);
+            const { width, height, lines } = isFixedLabelBlock
               ? {
                   width: EMPTY_HEIGHT * ASPECT,
                   height: EMPTY_HEIGHT,
                   lines: [] as string[],
                 }
               : layoutBox(box.question);
-            const label = isTransitionBlock ? "Transition" : lines.join("\n");
+            const label =
+              box.kind === "start"
+                ? "Start"
+                : box.kind === "transition"
+                  ? "Transition"
+                  : box.kind === "section-changer"
+                    ? "Section"
+                    : lines.join("\n");
+            const colorClass =
+              box.kind === "start"
+                ? "bg-[#2f9e5b] text-white"
+                : box.kind === "transition"
+                  ? "bg-[#9a9a9a] text-white"
+                  : box.kind === "section-changer"
+                    ? "bg-[#4f6bc4] text-white"
+                    : "bg-black text-white";
 
             return (
               <div
                 key={box.id}
                 draggable={false}
-                className={`absolute flex touch-none items-center justify-center overflow-hidden rounded-2xl text-center select-none cursor-move ${
-                  isTransitionBlock ? "bg-[#9a9a9a] text-white" : "bg-black text-white"
-                } ${
+                className={`absolute flex touch-none items-center justify-center overflow-hidden rounded-2xl text-center select-none cursor-move ${colorClass} ${
                   draggingBoxId === box.id || selected ? "z-10" : ""
                 } ${selected ? "ring-2 ring-[#2f5d76] ring-offset-2" : ""}`}
                 style={{
@@ -2168,17 +3026,64 @@ export default function CreateQuiz() {
                 >
                   Create Transition Block
                 </button>
+                {!boxes.some((box) => box.kind === "start") && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
+                    onClick={createStartBlockAtMenu}
+                  >
+                    Create Start Block
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
+                  onClick={createSectionChangerAtMenu}
+                >
+                  Create A Section Changer
+                </button>
               </>
-            ) : (
+            ) : menu.kind === "transition" ? (
               <>
                 <button
                   type="button"
                   role="menuitem"
                   className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
-                  onClick={duplicateQuestion}
+                  onClick={deleteTransition}
                 >
-                  Duplicate
+                  Delete
                 </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
+                  onClick={beginChangeTransitionOrigin}
+                >
+                  Change Origin
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
+                  onClick={beginChangeTransitionDestination}
+                >
+                  Change Destination
+                </button>
+              </>
+            ) : (
+              <>
+                {boxes.find((box) => box.id === menu.boxId)?.kind !== "start" && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
+                    onClick={duplicateQuestion}
+                  >
+                    Duplicate
+                  </button>
+                )}
                 <button
                   type="button"
                   role="menuitem"
@@ -2187,14 +3092,17 @@ export default function CreateQuiz() {
                 >
                   Delete
                 </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
-                  onClick={makeTransition}
-                >
-                  Make Transition
-                </button>
+                {boxes.find((box) => box.id === menu.boxId)?.kind !==
+                  "section-changer" && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
+                    onClick={makeTransition}
+                  >
+                    Make Transition
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -2226,7 +3134,7 @@ export default function CreateQuiz() {
             </h2>
             <AnswersEditor
               answers={selectedQuestion.answers}
-              variables={variables}
+              variables={allVariables}
               nameRefs={ansNameRefs}
               onCheckpoint={pushHistory}
               onUpdateAnswer={updateAnswer}
@@ -2240,25 +3148,52 @@ export default function CreateQuiz() {
         </aside>
       )}
 
-      {selectedTransitionBlock && (
+      {selectedEffectBlock && (
         <aside
           className="absolute top-0 bottom-0 left-0 z-30 flex w-[320px] flex-col overflow-y-auto border-r border-black/10 bg-[#fafafa] p-5 shadow-[4px_0_24px_rgba(0,0,0,0.06)]"
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <h1 className="text-lg font-semibold text-black">Transition Block</h1>
+          <h1 className="text-lg font-semibold text-black">
+            {selectedEffectBlock.kind === "start"
+              ? "Start Block"
+              : selectedEffectBlock.kind === "section-changer"
+                ? "Section Changer"
+                : "Transition Block"}
+          </h1>
           <section className="mt-6">
             <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
               Effects
             </h2>
             <EffectsEditor
-              effects={selectedTransitionBlock.effects}
-              variables={variables}
+              effects={selectedEffectBlock.effects}
+              variables={allVariables}
               onCheckpoint={pushHistory}
               onAddEffect={addBlockEffect}
               onUpdateEffect={updateBlockEffect}
               onRemoveEffect={removeBlockEffect}
             />
           </section>
+          {selectedEffectBlock.kind === "section-changer" && (
+            <section className="mt-8">
+              <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                Go To Section
+              </h2>
+              <select
+                aria-label="Target section"
+                value={selectedEffectBlock.targetSection}
+                onFocus={() => pushHistory()}
+                onChange={(e) => updateSectionChangerTarget(e.target.value)}
+                className="mt-3 w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
+              >
+                <option value="next">Next section</option>
+                {sectionList.map((section) => (
+                  <option key={section.id} value={section.id}>
+                    {section.name.trim() || "Untitled Section"}
+                  </option>
+                ))}
+              </select>
+            </section>
+          )}
         </aside>
       )}
 
@@ -2274,7 +3209,7 @@ export default function CreateQuiz() {
             </h2>
             <ConditionsEditor
               conditions={selectedTransition.conditions}
-              variables={variables}
+              variables={allVariables}
               onCheckpoint={pushHistory}
               onAddCondition={addTransitionCondition}
               onUpdateCondition={updateTransitionCondition}
@@ -2303,132 +3238,328 @@ export default function CreateQuiz() {
           }`}
         >
           <div className="flex w-[320px] flex-col overflow-y-auto p-5 pt-6 pl-7">
-            <h1 className="text-lg font-semibold text-black">Project Settings</h1>
-
-            <section className="mt-6">
-              <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
-                Project Name
-              </h2>
-              <input
-                type="text"
-                value={projectName}
-                aria-label="Project name"
-                onFocus={() => pushHistory()}
-                onChange={(e) => setProjectName(e.target.value)}
-                placeholder={DEFAULT_PROJECT_NAME}
-                className="mt-3 w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
-              />
-            </section>
-
-            <section className="mt-8">
-              <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
-                Variables
-              </h2>
-
-              <div className="mt-3 flex flex-col gap-2">
-                {variables.map((variable) => (
-                  <div
-                    key={variable.id}
-                    className="flex items-center gap-2 rounded-md border border-black/10 bg-white px-2 py-1.5"
-                  >
-                    <input
-                      ref={(el) => {
-                        if (el) varNameRefs.current.set(variable.id, el);
-                        else varNameRefs.current.delete(variable.id);
-                      }}
-                      type="text"
-                      value={variable.name}
-                      aria-label="Variable name"
-                      onFocus={() => pushHistory()}
-                      onChange={(e) => updateVariable(variable.id, { name: e.target.value })}
-                      className="min-w-0 flex-1 border-none bg-transparent px-1 py-0.5 text-sm text-black outline-none"
-                    />
-                    <label
-                      className="flex shrink-0 items-center gap-1 text-xs text-black/70"
-                      title="Boolean"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={variable.isBool}
-                        aria-label="Boolean variable"
-                        onChange={(e) => {
-                          const isBool = e.target.checked;
-                          pushHistory();
-                          updateVariable(variable.id, {
-                            isBool,
-                            value: isBool ? (variable.value !== 0 ? 1 : 0) : variable.value,
-                          });
-                        }}
-                        className="cursor-pointer"
-                      />
-                      <span>bool</span>
-                    </label>
-                    {variable.isBool ? (
-                      <input
-                        type="checkbox"
-                        checked={variable.value !== 0}
-                        aria-label="Boolean value"
-                        onChange={(e) => {
-                          pushHistory();
-                          updateVariable(variable.id, { value: e.target.checked ? 1 : 0 });
-                        }}
-                        className="h-4 w-4 shrink-0 cursor-pointer"
-                      />
-                    ) : (
-                      <input
-                        type="number"
-                        step="any"
-                        value={variable.value}
-                        aria-label="Variable value"
-                        onFocus={() => pushHistory()}
-                        onChange={(e) => {
-                          const next = e.target.value === "" ? 0 : Number(e.target.value);
-                          updateVariable(variable.id, {
-                            value: Number.isFinite(next) ? next : 0,
-                          });
-                        }}
-                        className="w-16 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
-                      />
-                    )}
-                    <button
-                      type="button"
-                      aria-label="Remove variable"
-                      onClick={() => removeVariable(variable.id)}
-                      className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-white text-base leading-none text-black hover:bg-black/5"
-                    >
-                      −
-                    </button>
-                  </div>
-                ))}
-              </div>
-
+            <Link
+              to="/dashboard"
+              className="mb-4 text-sm font-medium text-[#2f5d76] no-underline hover:text-[#244a5e]"
+            >
+              ← Your Quizzes
+            </Link>
+            <div className="flex items-start justify-between gap-2">
+              <h1 className="text-lg font-semibold text-black">
+                {settingsPane === "project" ? "Project Settings" : "Section Settings"}
+              </h1>
               <button
                 type="button"
-                aria-label="Add variable"
-                onClick={addVariable}
-                className="mt-3 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-white text-lg leading-none text-black hover:bg-black/5"
+                onClick={() =>
+                  setSettingsPane((pane) => (pane === "project" ? "section" : "project"))
+                }
+                className="shrink-0 cursor-pointer border-none bg-transparent p-0 text-left text-xs font-medium leading-snug text-[#2f5d76] hover:text-[#244a5e]"
               >
-                +
+                {settingsPane === "project"
+                  ? "Switch To Section Settings"
+                  : "Switch To Project Settings"}
               </button>
-            </section>
+            </div>
 
-            <section className="mt-8">
-              <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
-                Default Question Answers
-              </h2>
-              <AnswersEditor
-                answers={defaultAnswers}
-                variables={variables}
-                nameRefs={defaultAnsNameRefs}
-                onCheckpoint={pushHistory}
-                onUpdateAnswer={updateDefaultAnswer}
-                onRemoveAnswer={removeDefaultAnswer}
-                onAddAnswer={addDefaultAnswer}
-                onAddEffect={addDefaultEffect}
-                onUpdateEffect={updateDefaultEffect}
-                onRemoveEffect={removeDefaultEffect}
-              />
-            </section>
+            {settingsPane === "project" ? (
+              <>
+                <section className="mt-6">
+                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                    Project Name
+                  </h2>
+                  <input
+                    type="text"
+                    value={projectName}
+                    aria-label="Project name"
+                    onFocus={() => pushHistory()}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    placeholder={DEFAULT_PROJECT_NAME}
+                    className="mt-3 w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
+                  />
+                </section>
+
+                <section className="mt-8">
+                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                    Variables
+                  </h2>
+
+                  <div className="mt-3 flex flex-col gap-2">
+                    {variables.map((variable) => (
+                      <div
+                        key={variable.id}
+                        className="flex items-center gap-2 rounded-md border border-black/10 bg-white px-2 py-1.5"
+                      >
+                        <input
+                          ref={(el) => {
+                            if (el) varNameRefs.current.set(variable.id, el);
+                            else varNameRefs.current.delete(variable.id);
+                          }}
+                          type="text"
+                          value={variable.name}
+                          aria-label="Variable name"
+                          onFocus={() => {
+                            pushHistory();
+                            nameEditBaselineRef.current = variable.name;
+                          }}
+                          onChange={(e) =>
+                            updateVariable(variable.id, { name: e.target.value })
+                          }
+                          onBlur={() => commitVariableName(variable.id)}
+                          className="min-w-0 flex-1 border-none bg-transparent px-1 py-0.5 text-sm text-black outline-none"
+                        />
+                        <select
+                          aria-label="Variable type"
+                          value={variable.type}
+                          onFocus={() => pushHistory()}
+                          onChange={(e) => {
+                            const type = e.target.value as VariableType;
+                            pushHistory();
+                            updateVariable(variable.id, {
+                              type,
+                              value: coerceValueForType(type, variable.value),
+                            });
+                          }}
+                          className="shrink-0 rounded border border-black/15 bg-white px-1 py-0.5 text-xs text-black outline-none focus:border-[#2f5d76]"
+                        >
+                          {VARIABLE_TYPES.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        {variable.type === "bool" ? (
+                          <input
+                            type="checkbox"
+                            checked={variable.value !== 0 && variable.value !== "0"}
+                            aria-label="Boolean value"
+                            onChange={(e) => {
+                              pushHistory();
+                              updateVariable(variable.id, {
+                                value: e.target.checked ? 1 : 0,
+                              });
+                            }}
+                            className="h-4 w-4 shrink-0 cursor-pointer"
+                          />
+                        ) : variable.type === "string" ? (
+                          <input
+                            type="text"
+                            value={typeof variable.value === "string" ? variable.value : ""}
+                            aria-label="Variable value"
+                            onFocus={() => pushHistory()}
+                            onChange={(e) =>
+                              updateVariable(variable.id, { value: e.target.value })
+                            }
+                            className="w-20 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
+                          />
+                        ) : (
+                          <input
+                            type="number"
+                            step="any"
+                            value={typeof variable.value === "number" ? variable.value : 0}
+                            aria-label="Variable value"
+                            onFocus={() => pushHistory()}
+                            onChange={(e) => {
+                              const next =
+                                e.target.value === "" ? 0 : Number(e.target.value);
+                              updateVariable(variable.id, {
+                                value: Number.isFinite(next) ? next : 0,
+                              });
+                            }}
+                            className="w-16 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
+                          />
+                        )}
+                        <button
+                          type="button"
+                          aria-label="Remove variable"
+                          onClick={() => removeVariable(variable.id)}
+                          className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-white text-base leading-none text-black hover:bg-black/5"
+                        >
+                          −
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    aria-label="Add variable"
+                    onClick={addVariable}
+                    className="mt-3 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-white text-lg leading-none text-black hover:bg-black/5"
+                  >
+                    +
+                  </button>
+                </section>
+
+                <section className="mt-8">
+                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                    Default Question Answers
+                  </h2>
+                  <AnswersEditor
+                    answers={defaultAnswers}
+                    variables={allVariables}
+                    nameRefs={defaultAnsNameRefs}
+                    onCheckpoint={pushHistory}
+                    onUpdateAnswer={updateDefaultAnswer}
+                    onRemoveAnswer={removeDefaultAnswer}
+                    onAddAnswer={addDefaultAnswer}
+                    onAddEffect={addDefaultEffect}
+                    onUpdateEffect={updateDefaultEffect}
+                    onRemoveEffect={removeDefaultEffect}
+                  />
+                </section>
+              </>
+            ) : (
+              <>
+                <section className="mt-6">
+                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                    Section Name
+                  </h2>
+                  <input
+                    type="text"
+                    value={sectionName}
+                    aria-label="Section name"
+                    onFocus={() => {
+                      pushHistory();
+                      nameEditBaselineRef.current = sectionName;
+                    }}
+                    onChange={(e) => setSectionName(e.target.value)}
+                    onBlur={() => commitSectionName()}
+                    placeholder="Section1"
+                    className="mt-3 w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
+                  />
+                </section>
+
+                <section className="mt-8">
+                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                    Local Variables
+                  </h2>
+
+                  <div className="mt-3 flex flex-col gap-2">
+                    {localVariables.map((variable) => (
+                      <div
+                        key={variable.id}
+                        className="flex items-center gap-2 rounded-md border border-black/10 bg-white px-2 py-1.5"
+                      >
+                        <input
+                          ref={(el) => {
+                            if (el) localVarNameRefs.current.set(variable.id, el);
+                            else localVarNameRefs.current.delete(variable.id);
+                          }}
+                          type="text"
+                          value={variable.name}
+                          aria-label="Local variable name"
+                          onFocus={() => {
+                            pushHistory();
+                            nameEditBaselineRef.current = variable.name;
+                          }}
+                          onChange={(e) =>
+                            updateLocalVariable(variable.id, { name: e.target.value })
+                          }
+                          onBlur={() => commitLocalVariableName(variable.id)}
+                          className="min-w-0 flex-1 border-none bg-transparent px-1 py-0.5 text-sm text-black outline-none"
+                        />
+                        <select
+                          aria-label="Local variable type"
+                          value={variable.type}
+                          onFocus={() => pushHistory()}
+                          onChange={(e) => {
+                            const type = e.target.value as VariableType;
+                            pushHistory();
+                            updateLocalVariable(variable.id, {
+                              type,
+                              value: coerceValueForType(type, variable.value),
+                            });
+                          }}
+                          className="shrink-0 rounded border border-black/15 bg-white px-1 py-0.5 text-xs text-black outline-none focus:border-[#2f5d76]"
+                        >
+                          {VARIABLE_TYPES.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        {variable.type === "bool" ? (
+                          <input
+                            type="checkbox"
+                            checked={variable.value !== 0 && variable.value !== "0"}
+                            aria-label="Boolean value"
+                            onChange={(e) => {
+                              pushHistory();
+                              updateLocalVariable(variable.id, {
+                                value: e.target.checked ? 1 : 0,
+                              });
+                            }}
+                            className="h-4 w-4 shrink-0 cursor-pointer"
+                          />
+                        ) : variable.type === "string" ? (
+                          <input
+                            type="text"
+                            value={typeof variable.value === "string" ? variable.value : ""}
+                            aria-label="Local variable value"
+                            onFocus={() => pushHistory()}
+                            onChange={(e) =>
+                              updateLocalVariable(variable.id, { value: e.target.value })
+                            }
+                            className="w-20 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
+                          />
+                        ) : (
+                          <input
+                            type="number"
+                            step="any"
+                            value={typeof variable.value === "number" ? variable.value : 0}
+                            aria-label="Local variable value"
+                            onFocus={() => pushHistory()}
+                            onChange={(e) => {
+                              const next =
+                                e.target.value === "" ? 0 : Number(e.target.value);
+                              updateLocalVariable(variable.id, {
+                                value: Number.isFinite(next) ? next : 0,
+                              });
+                            }}
+                            className="w-16 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
+                          />
+                        )}
+                        <button
+                          type="button"
+                          aria-label="Remove local variable"
+                          onClick={() => removeLocalVariable(variable.id)}
+                          className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-white text-base leading-none text-black hover:bg-black/5"
+                        >
+                          −
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    aria-label="Add local variable"
+                    onClick={addLocalVariable}
+                    className="mt-3 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-white text-lg leading-none text-black hover:bg-black/5"
+                  >
+                    +
+                  </button>
+                </section>
+
+                <section className="mt-8">
+                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                    Local Default Question Answers
+                  </h2>
+                  <AnswersEditor
+                    answers={localDefaultAnswers}
+                    variables={allVariables}
+                    nameRefs={localDefaultAnsNameRefs}
+                    onCheckpoint={pushHistory}
+                    onUpdateAnswer={updateLocalDefaultAnswer}
+                    onRemoveAnswer={removeLocalDefaultAnswer}
+                    onAddAnswer={addLocalDefaultAnswer}
+                    onAddEffect={addLocalDefaultEffect}
+                    onUpdateEffect={updateLocalDefaultEffect}
+                    onRemoveEffect={removeLocalDefaultEffect}
+                  />
+                </section>
+              </>
+            )}
           </div>
         </aside>
       </div>
