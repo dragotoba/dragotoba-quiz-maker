@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { SymbolIcon } from "@/components/SymbolIcon";
 import { SYMBOLS, type IconSymbol } from "@/data/icons-data";
 import dragotobaLogo from "@/assets/dragotoba-logo.png";
@@ -22,6 +23,7 @@ const CIRCLE_RADIUS = 172;
 const CIRCLE_COUNT = 15;
 
 export default function Index() {
+  const navigate = useNavigate();
   const [sets, setSets] = useState<IconSets | null>(null);
 
   useEffect(() => {
@@ -84,6 +86,7 @@ export default function Index() {
               <div className="absolute inset-0 flex items-center justify-center">
                 <button
                   type="button"
+                  onClick={() => navigate("/create")}
                   className="cursor-pointer rounded-full border-none bg-[#2f5d76] px-10 py-5 font-[Poppins,sans-serif] text-[19px] font-bold tracking-[0.01em] text-[#f8fafc] shadow-[0_6px_18px_rgba(0,0,0,0.15)]"
                 >
                   Create Your Quiz

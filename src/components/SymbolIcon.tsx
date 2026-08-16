@@ -3,7 +3,12 @@ import type { IconShape, IconSymbol } from "@/data/icons-data";
 function renderShape(shape: IconShape, key: string | number) {
   const fill = shape.fill || "none";
   const strokeProps = shape.stroke
-    ? { stroke: shape.stroke, strokeWidth: shape.sw || 1 }
+    ? {
+        stroke: shape.stroke,
+        strokeWidth: shape.sw || 1,
+        strokeLinecap: "round" as const,
+        strokeLinejoin: "round" as const,
+      }
     : {};
   const transformProp = shape.transform ? { transform: shape.transform } : {};
 
@@ -101,6 +106,18 @@ type SymbolIconProps = {
 };
 
 export function SymbolIcon({ symbol, className }: SymbolIconProps) {
+  if (symbol.assetUrl) {
+    return (
+      <img
+        src={symbol.assetUrl}
+        alt=""
+        className={className}
+        aria-hidden
+        style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+      />
+    );
+  }
+
   return (
     <svg viewBox="0 0 24 24" width="100%" height="100%" className={className} aria-hidden>
       {symbol.shapes.map((shape, i) => renderShape(shape, shape.key ?? i))}
