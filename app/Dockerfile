@@ -2,7 +2,7 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 
-COPY package.json ./
+COPY package.json package-lock.json* ./
 RUN npm install
 
 COPY . .
@@ -13,7 +13,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # package.json is required when Railway overrides CMD with `npm start`
-COPY package.json ./
+COPY package.json package-lock.json* ./
 COPY server.mjs ./
 COPY --from=build /app/dist ./dist
 
