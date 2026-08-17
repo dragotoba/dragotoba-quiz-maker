@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
 const CACHE = path.join(__dirname, "svg-cache");
-const OUT = path.join(ROOT, "src", "data", "icons-data.ts");
+const OUT = path.join(ROOT, "app", "src", "data", "icons-data.ts");
 const REPORT = path.join(__dirname, "icon-rebuild-report.md");
 
 fs.mkdirSync(CACHE, { recursive: true });
