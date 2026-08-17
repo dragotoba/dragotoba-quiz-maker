@@ -18,6 +18,8 @@ export type StoredQuizDocument = {
   defaultAnswers: unknown;
   sections: unknown;
   activeSectionId: string;
+  /** Results page (scroll document); optional for older saves. */
+  results?: unknown;
   /** @deprecated migrated into sections */
   boxes?: unknown;
   transitions?: unknown;
@@ -76,6 +78,7 @@ function emptyDocument(id: string = crypto.randomUUID()): StoredQuizDocument {
     ],
     sections: [section],
     activeSectionId: section.id,
+    results: { textBoxes: [] },
   };
 }
 
@@ -144,6 +147,7 @@ function asDocument(raw: unknown): StoredQuizDocument | null {
     defaultAnswers: data.defaultAnswers ?? emptyDocument(id).defaultAnswers,
     sections,
     activeSectionId,
+    results: data.results ?? { textBoxes: [] },
   };
 }
 
