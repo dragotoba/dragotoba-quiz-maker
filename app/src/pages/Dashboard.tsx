@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   createStoredQuiz,
@@ -6,6 +6,8 @@ import {
   listQuizSummaries,
   type QuizSummary,
 } from "@/lib/quizStorage";
+
+const DELETE_COUNTDOWN_SECONDS = 3;
 
 function formatUpdatedAt(timestamp: number) {
   try {
@@ -21,9 +23,15 @@ function formatUpdatedAt(timestamp: number) {
 export default function Dashboard() {
   const navigate = useNavigate();
   const [quizzes, setQuizzes] = useState<QuizSummary[]>(() => listQuizSummaries());
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [deleteCountdown, setDeleteCountdown] = useState(DELETE_COUNTDOWN_SECONDS);
 
   const empty = quizzes.length === 0;
   const sorted = useMemo(() => quizzes, [quizzes]);
+  const deleteLabel = deleteConfirm?.name.trim() || "Untitled Quiz";
 
   function refresh() {
     setQuizzes(listQuizSummaries());
@@ -34,15 +42,48 @@ export default function Dashboard() {
     navigate(`/quiz/${quiz.id}`);
   }
 
-  function handleDelete(id: string, name: string) {
-    const label = name.trim() || "this quiz";
-    if (!window.confirm(`Delete “${label}”? This cannot be undone.`)) return;
-    deleteStoredQuiz(id);
+  function openDeleteConfirm(id: string, name: string) {
+    setDeleteConfirm({ id, name });
+  }
+
+  function closeDeleteConfirm() {
+    setDeleteConfirm(null);
+  }
+
+  function confirmDelete() {
+    if (!deleteConfirm || deleteCountdown > 0) return;
+    deleteStoredQuiz(deleteConfirm.id);
+    setDeleteConfirm(null);
     refresh();
   }
 
+  useEffect(() => {
+    if (!deleteConfirm) return;
+    setDeleteCountdown(DELETE_COUNTDOWN_SECONDS);
+    const timer = window.setInterval(() => {
+      setDeleteCountdown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [deleteConfirm]);
+
+  useEffect(() => {
+    if (!deleteConfirm) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeDeleteConfirm();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [deleteConfirm]);
+
   return (
     <main className="qh-page relative min-h-screen w-full font-[Poppins,sans-serif] text-[#1a1a1a]">
+      <Link
+        to="/login"
+        className="absolute top-6 right-6 rounded-full border border-[#2f5d76]/25 bg-white/70 px-4 py-2 text-sm font-semibold text-[#2f5d76] no-underline shadow-sm hover:bg-white hover:text-[#244a5e] sm:right-8"
+      >
+        Log In
+      </Link>
+
       <div className="mx-auto flex w-full max-w-3xl flex-col px-6 py-10 sm:px-8 sm:py-14">
         <div className="mb-10 flex flex-wrap items-end justify-between gap-4">
           <div>
@@ -102,7 +143,7 @@ export default function Dashboard() {
                 <button
                   type="button"
                   aria-label={`Delete ${quiz.projectName || "quiz"}`}
-                  onClick={() => handleDelete(quiz.id, quiz.projectName)}
+                  onClick={() => openDeleteConfirm(quiz.id, quiz.projectName)}
                   className="shrink-0 cursor-pointer self-center border-none bg-transparent px-3 py-2 text-sm text-[#7a3b3b] hover:text-[#5c1f1f]"
                 >
                   Delete
@@ -112,6 +153,47 @@ export default function Dashboard() {
           </ul>
         )}
       </div>
+
+      {deleteConfirm && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          role="presentation"
+          onClick={closeDeleteConfirm}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-quiz-title"
+            aria-describedby="delete-quiz-desc"
+            className="w-full max-w-sm rounded-xl border border-black/10 bg-white p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="delete-quiz-title" className="text-lg font-semibold text-black">
+              Delete this quiz?
+            </h2>
+            <p id="delete-quiz-desc" className="mt-2 text-sm leading-relaxed text-black/70">
+              “{deleteLabel}” will be permanently deleted. This cannot be undone.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeDeleteConfirm}
+                className="cursor-pointer rounded-lg border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black hover:bg-black/5"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleteCountdown > 0}
+                onClick={confirmDelete}
+                className="cursor-pointer rounded-lg border border-[#c0392b] bg-[#c0392b] px-3 py-2 text-sm font-medium text-white hover:bg-[#a93226] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-[#c0392b]"
+              >
+                {deleteCountdown > 0 ? `Delete (${deleteCountdown})` : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

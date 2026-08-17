@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { SymbolIcon } from "@/components/SymbolIcon";
 import { SYMBOLS, type IconSymbol } from "@/data/icons-data";
 import dragotobaLogo from "@/assets/dragotoba-logo.png";
@@ -49,6 +49,12 @@ export default function Index() {
           alt="Dragotoba Studios"
           className="h-12 w-12 object-contain"
         />
+        <Link
+          to="/login"
+          className="rounded-full border border-[#2f5d76]/25 bg-white/70 px-4 py-2 text-sm font-semibold text-[#2f5d76] no-underline shadow-sm hover:bg-white hover:text-[#244a5e]"
+        >
+          Log In
+        </Link>
       </div>
 
       {sets && (
