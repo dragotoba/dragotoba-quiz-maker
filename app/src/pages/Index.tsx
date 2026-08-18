@@ -98,6 +98,7 @@ export default function Index() {
 
             <button
               type="button"
+              onClick={() => navigate("/community")}
               className="cursor-pointer rounded-full border-none bg-[#2f5d76] px-[34px] py-4 font-[Poppins,sans-serif] text-base font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)]"
             >
               View Community Quizzes

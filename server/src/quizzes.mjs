@@ -101,6 +101,30 @@ function rowToSummary(row) {
   };
 }
 
+function rowToCommunity(row) {
+  return {
+    id: row.id,
+    name: row.project_name,
+    description: row.description ?? "",
+    coverImage: row.cover_image ?? "",
+    likes: Number(row.like_count) || 0,
+    publishedAt: Number(row.published_at_ms),
+    author: row.username ?? "",
+  };
+}
+
+const COMMUNITY_SORTS = new Set(["trending", "liked", "recent"]);
+
+function communityOrderBy(sort) {
+  if (sort === "liked") {
+    return "p.like_count DESC, p.published_at DESC";
+  }
+  if (sort === "recent") {
+    return "p.published_at DESC";
+  }
+  return "(p.like_count::bigint * 86400) + EXTRACT(EPOCH FROM p.published_at)::bigint DESC";
+}
+
 export function registerQuizRoutes(app, pool, requireUser) {
   app.get("/api/quizzes", requireUser, async (req, res) => {
     try {
@@ -126,7 +150,10 @@ export function registerQuizRoutes(app, pool, requireUser) {
     }
     try {
       const result = await pool.query(
-        `SELECT document FROM quizzes WHERE user_id = $1 AND id = $2`,
+        `SELECT q.document, (p.id IS NOT NULL) AS published
+         FROM quizzes q
+         LEFT JOIN published_quizzes p ON p.user_id = q.user_id AND p.id = q.id
+         WHERE q.user_id = $1 AND q.id = $2`,
         [req.userId, req.params.id],
       );
       const row = result.rows[0];
@@ -134,7 +161,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
         res.status(404).json({ error: "Quiz not found." });
         return;
       }
-      res.json({ quiz: row.document });
+      res.json({ quiz: row.document, published: Boolean(row.published) });
     } catch (error) {
       console.error("Load quiz failed:", error);
       res.status(500).json({ error: "Could not load quiz." });
@@ -257,6 +284,91 @@ export function registerQuizRoutes(app, pool, requireUser) {
     } catch (error) {
       console.error("Import quizzes failed:", error);
       res.status(500).json({ error: "Could not save quizzes to your account." });
+    }
+  });
+
+  app.post("/api/quizzes/:id/publish", requireUser, async (req, res) => {
+    if (!isUuid(req.params.id)) {
+      res.status(400).json({ error: "Invalid quiz id." });
+      return;
+    }
+    try {
+      const draft = await pool.query(
+        `SELECT document FROM quizzes WHERE user_id = $1 AND id = $2`,
+        [req.userId, req.params.id],
+      );
+      const row = draft.rows[0];
+      if (!row) {
+        res.status(404).json({ error: "Quiz not found." });
+        return;
+      }
+      const parsed = parseDocument(row.document);
+      if (!parsed.ok) {
+        res.status(400).json({ error: parsed.error });
+        return;
+      }
+      const doc = parsed.doc;
+      const listing = doc.listing ?? {
+        description: "",
+        coverImage: "",
+        unlisted: false,
+      };
+      const description =
+        typeof listing.description === "string" ? listing.description.slice(0, 2000) : "";
+      const coverImage =
+        typeof listing.coverImage === "string" ? listing.coverImage : "";
+      const unlisted = listing.unlisted === true;
+
+      const published = await pool.query(
+        `INSERT INTO published_quizzes (
+           id, user_id, project_name, description, cover_image, unlisted, document, published_at
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           user_id = EXCLUDED.user_id,
+           project_name = EXCLUDED.project_name,
+           description = EXCLUDED.description,
+           cover_image = EXCLUDED.cover_image,
+           unlisted = EXCLUDED.unlisted,
+           document = EXCLUDED.document,
+           published_at = NOW()
+         RETURNING (EXTRACT(EPOCH FROM published_at) * 1000)::bigint AS published_at_ms`,
+        [
+          doc.id,
+          req.userId,
+          doc.projectName,
+          description,
+          coverImage,
+          unlisted,
+          JSON.stringify(doc),
+        ],
+      );
+      res.json({
+        published: true,
+        publishedAt: Number(published.rows[0]?.published_at_ms) || Date.now(),
+      });
+    } catch (error) {
+      console.error("Publish quiz failed:", error);
+      res.status(500).json({ error: "Could not publish quiz." });
+    }
+  });
+
+  app.get("/api/community/quizzes", async (req, res) => {
+    const sort = COMMUNITY_SORTS.has(req.query?.sort) ? req.query.sort : "trending";
+    try {
+      const result = await pool.query(
+        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, u.username,
+                (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms
+         FROM published_quizzes p
+         JOIN users u ON u.id = p.user_id
+         WHERE NOT p.unlisted
+         ORDER BY ${communityOrderBy(sort)}
+         LIMIT 100`,
+      );
+      res.json({ quizzes: result.rows.map(rowToCommunity) });
+    } catch (error) {
+      console.error("List community quizzes failed:", error);
+      res.status(500).json({ error: "Could not load community quizzes." });
     }
   });
 }

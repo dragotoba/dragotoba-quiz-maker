@@ -10,6 +10,18 @@ export type QuizSummary = {
   updatedAt: number;
 };
 
+export type CommunitySort = "trending" | "liked" | "recent";
+
+export type CommunityQuizSummary = {
+  id: string;
+  name: string;
+  description: string;
+  coverImage: string;
+  likes: number;
+  publishedAt: number;
+  author: string;
+};
+
 export type QuizListing = {
   description: string;
   coverImage: string;
@@ -416,22 +428,52 @@ export async function listQuizSummaries(): Promise<QuizSummary[]> {
 }
 
 export async function getStoredQuiz(id: string): Promise<StoredQuizDocument | null> {
-  if (!usesRemoteStorage()) return getLocalQuiz(id);
+  const loaded = await loadStoredQuiz(id);
+  return loaded?.quiz ?? null;
+}
+
+export async function loadStoredQuiz(
+  id: string,
+): Promise<{ quiz: StoredQuizDocument; published: boolean } | null> {
+  if (!usesRemoteStorage()) {
+    const quiz = getLocalQuiz(id);
+    return quiz ? { quiz, published: false } : null;
+  }
   await migrateLocalQuizzesIfNeeded();
   try {
-    const data = await apiJson<{ quiz: StoredQuizDocument }>(
+    const data = await apiJson<{ quiz: StoredQuizDocument; published?: boolean }>(
       `/quizzes/${encodeURIComponent(id)}`,
     );
     const quiz = data?.quiz;
     if (quiz && typeof quiz === "object") {
       lastSavedKey.set(id, contentKey(quiz));
-      return quiz;
+      return { quiz, published: Boolean(data.published) };
     }
     return null;
   } catch (error) {
     if (error instanceof Error && error.message === "Quiz not found.") return null;
     throw error;
   }
+}
+
+export async function publishStoredQuiz(id: string) {
+  if (!usesRemoteStorage()) {
+    throw new Error("Sign in to publish a quiz.");
+  }
+  await migrateLocalQuizzesIfNeeded();
+  await apiJson<{ published: boolean }>(`/quizzes/${encodeURIComponent(id)}/publish`, {
+    method: "POST",
+  });
+}
+
+export async function listCommunityQuizzes(
+  sort: CommunitySort = "trending",
+): Promise<CommunityQuizSummary[]> {
+  const query = new URLSearchParams({ sort });
+  const data = await apiJson<{ quizzes: CommunityQuizSummary[] }>(
+    `/community/quizzes?${query.toString()}`,
+  );
+  return Array.isArray(data?.quizzes) ? data.quizzes : [];
 }
 
 export async function saveStoredQuiz(doc: StoredQuizDocument, options?: { keepalive?: boolean }) {

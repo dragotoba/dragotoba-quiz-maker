@@ -89,3 +89,11 @@ export async function loginAccount(input: {
 export function logoutAccount() {
   clearSession();
 }
+
+export function safeNextPath(raw: string | null | undefined, fallback = "/dashboard") {
+  if (typeof raw !== "string") return fallback;
+  const value = raw.trim();
+  if (!value.startsWith("/")) return fallback;
+  if (value.startsWith("//") || value.includes("://")) return fallback;
+  return value;
+}
