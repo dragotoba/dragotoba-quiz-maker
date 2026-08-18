@@ -476,6 +476,16 @@ export async function listCommunityQuizzes(
   return Array.isArray(data?.quizzes) ? data.quizzes : [];
 }
 
+export async function getPublishedQuiz(id: string): Promise<StoredQuizDocument> {
+  const data = await apiJson<{ quiz: StoredQuizDocument }>(
+    `/community/quizzes/${encodeURIComponent(id)}`,
+  );
+  if (!data?.quiz || typeof data.quiz !== "object") {
+    throw new Error("Quiz not found.");
+  }
+  return data.quiz;
+}
+
 export async function saveStoredQuiz(doc: StoredQuizDocument, options?: { keepalive?: boolean }) {
   const next: StoredQuizDocument = {
     ...withValidId(doc),

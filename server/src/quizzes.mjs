@@ -371,4 +371,26 @@ export function registerQuizRoutes(app, pool, requireUser) {
       res.status(500).json({ error: "Could not load community quizzes." });
     }
   });
+
+  app.get("/api/community/quizzes/:id", async (req, res) => {
+    if (!isUuid(req.params.id)) {
+      res.status(400).json({ error: "Invalid quiz id." });
+      return;
+    }
+    try {
+      const result = await pool.query(
+        `SELECT document FROM published_quizzes WHERE id = $1 AND NOT unlisted`,
+        [req.params.id],
+      );
+      const row = result.rows[0];
+      if (!row) {
+        res.status(404).json({ error: "Quiz not found." });
+        return;
+      }
+      res.json({ quiz: row.document });
+    } catch (error) {
+      console.error("Load community quiz failed:", error);
+      res.status(500).json({ error: "Could not load quiz." });
+    }
+  });
 }
