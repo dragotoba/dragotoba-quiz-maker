@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import AccountButton from "@/components/AccountButton";
+import { getToken } from "@/lib/auth";
 import {
+  getCommunityQuiz,
   getPublishedQuiz,
   listCommunityQuizzes,
+  toggleCommunityLike,
   type CommunityQuizSummary,
   type CommunitySort,
 } from "@/lib/quizStorage";
@@ -15,17 +18,30 @@ const SORT_OPTIONS: { value: CommunitySort; label: string }[] = [
   { value: "recent", label: "Most Recent" },
 ];
 
+function quizLink(id: string) {
+  return `${window.location.origin}/community/${id}`;
+}
+
+function formatLikes(count: number) {
+  return count === 1 ? "1 like" : `${count} likes`;
+}
+
 export default function Community() {
+  const { quizId } = useParams<{ quizId: string }>();
+  const navigate = useNavigate();
   const [sort, setSort] = useState<CommunitySort>("trending");
   const [quizzes, setQuizzes] = useState<CommunityQuizSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<CommunityQuizSummary | null>(null);
+  const [selectedError, setSelectedError] = useState("");
   const [playQuiz, setPlayQuiz] = useState<ReturnType<typeof parseStoredQuiz> | null>(
     null,
   );
   const [playBusy, setPlayBusy] = useState(false);
   const [playError, setPlayError] = useState("");
+  const [likeBusy, setLikeBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,13 +66,92 @@ export default function Community() {
   }, [sort]);
 
   useEffect(() => {
-    if (!selected || playQuiz) return;
+    if (!quizId) {
+      setSelected(null);
+      setSelectedError("");
+      return;
+    }
+    const fromList = quizzes.find((quiz) => quiz.id === quizId);
+    if (fromList) {
+      setSelected(fromList);
+      setSelectedError("");
+      return;
+    }
+    if (loading) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const listing = await getCommunityQuiz(quizId);
+        if (!cancelled) {
+          setSelected(listing);
+          setSelectedError("");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setSelected(null);
+          setSelectedError(err instanceof Error ? err.message : "Quiz not found.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [quizId, quizzes, loading]);
+
+  useEffect(() => {
+    setCopied(false);
+    setPlayError("");
+  }, [quizId]);
+
+  useEffect(() => {
+    if ((!selected && !selectedError) || playQuiz) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSelected(null);
+      if (e.key === "Escape") navigate("/community");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected, playQuiz]);
+  }, [selected, selectedError, playQuiz, navigate]);
+
+  function applyLike(id: string, likes: number, liked: boolean) {
+    setQuizzes((prev) =>
+      prev.map((quiz) => (quiz.id === id ? { ...quiz, likes, liked } : quiz)),
+    );
+    setSelected((prev) => (prev && prev.id === id ? { ...prev, likes, liked } : prev));
+  }
+
+  async function handleCopyLink() {
+    if (!selected) return;
+    const url = quizLink(selected.id);
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      const field = document.createElement("textarea");
+      field.value = url;
+      document.body.appendChild(field);
+      field.select();
+      document.execCommand("copy");
+      field.remove();
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  async function handleLike() {
+    if (!selected || likeBusy) return;
+    if (!getToken()) {
+      navigate(`/login?next=${encodeURIComponent(`/community/${selected.id}`)}`);
+      return;
+    }
+    setLikeBusy(true);
+    try {
+      const result = await toggleCommunityLike(selected.id);
+      applyLike(selected.id, result.likes, result.liked);
+    } catch (err) {
+      setPlayError(err instanceof Error ? err.message : "Could not update like.");
+    } finally {
+      setLikeBusy(false);
+    }
+  }
 
   async function handlePlay() {
     if (!selected || playBusy) return;
@@ -65,7 +160,6 @@ export default function Community() {
     try {
       const doc = await getPublishedQuiz(selected.id);
       setPlayQuiz(parseStoredQuiz(doc));
-      setSelected(null);
     } catch (err) {
       setPlayError(err instanceof Error ? err.message : "Could not load quiz.");
     } finally {
@@ -83,6 +177,8 @@ export default function Community() {
       />
     );
   }
+
+  const popupOpen = Boolean(quizId);
 
   return (
     <main className="qh-page relative min-h-screen w-full font-[Poppins,sans-serif] text-[#1a1a1a]">
@@ -140,13 +236,9 @@ export default function Community() {
           <ul className="mt-10 m-0 grid list-none grid-cols-1 gap-5 p-0 sm:grid-cols-2 lg:grid-cols-3">
             {quizzes.map((quiz) => (
               <li key={quiz.id}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPlayError("");
-                    setSelected(quiz);
-                  }}
-                  className="w-full cursor-pointer overflow-hidden rounded-2xl border border-[#1c2a33]/10 bg-white/80 text-left shadow-[0_8px_24px_rgba(0,0,0,0.08)] hover:border-[#2f5d76]/40"
+                <Link
+                  to={`/community/${quiz.id}`}
+                  className="block w-full overflow-hidden rounded-2xl border border-[#1c2a33]/10 bg-white/80 text-left no-underline shadow-[0_8px_24px_rgba(0,0,0,0.08)] hover:border-[#2f5d76]/40"
                 >
                   <div className="flex h-40 items-center justify-center bg-[#f4f1ea]">
                     {quiz.coverImage ? (
@@ -171,19 +263,22 @@ export default function Community() {
                     <p className="mt-1 line-clamp-2 min-h-[2.5rem] text-sm leading-relaxed text-[#4a5560]">
                       {quiz.description.trim() || "No description"}
                     </p>
+                    <p className="mt-2 text-xs font-medium text-[#2f5d76]">
+                      {formatLikes(quiz.likes)}
+                    </p>
                   </div>
-                </button>
+                </Link>
               </li>
             ))}
           </ul>
         )}
       </div>
 
-      {selected && (
+      {popupOpen && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
           role="presentation"
-          onClick={() => setSelected(null)}
+          onClick={() => navigate("/community")}
         >
           <div
             role="dialog"
@@ -192,50 +287,92 @@ export default function Community() {
             className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-[#1c2a33]/10 bg-white shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="shrink-0 p-5 pb-0">
-              {selected.coverImage ? (
-                <div className="flex max-h-[40vh] items-center justify-center overflow-auto rounded-xl bg-[#f4f1ea]">
-                  <img
-                    src={selected.coverImage}
-                    alt=""
-                    className="max-h-[40vh] w-auto max-w-full object-contain"
-                  />
-                </div>
-              ) : (
-                <div className="flex h-28 items-center justify-center rounded-xl bg-[#f4f1ea] text-sm text-[#5c6770]">
-                  No image
-                </div>
-              )}
-              <h2
-                id="community-quiz-title"
-                className="mt-4 text-xl font-semibold text-[#1c2a33]"
-              >
-                {selected.name.trim() || "Untitled Quiz"}
-              </h2>
-              {selected.author ? (
-                <p className="mt-1 text-sm text-[#5c6770]">by {selected.author}</p>
-              ) : null}
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
-              <p className="whitespace-pre-wrap text-sm leading-relaxed text-[#4a5560]">
-                {selected.description.trim() || "No description"}
-              </p>
-            </div>
-            <div className="shrink-0 border-t border-[#1c2a33]/10 p-5">
-              {playError ? (
-                <p className="mb-3 text-sm font-medium text-[#7a3b3b]" role="alert">
-                  {playError}
+            {selectedError && !selected ? (
+              <div className="p-6">
+                <p className="text-sm font-medium text-[#7a3b3b]" role="alert">
+                  {selectedError}
                 </p>
-              ) : null}
-              <button
-                type="button"
-                disabled={playBusy}
-                onClick={() => void handlePlay()}
-                className="w-full cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {playBusy ? "Loading…" : "Play quiz"}
-              </button>
-            </div>
+                <button
+                  type="button"
+                  onClick={() => navigate("/community")}
+                  className="mt-4 w-full cursor-pointer rounded-full border border-[#2f5d76] bg-white px-6 py-3 text-sm font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/5"
+                >
+                  Back to community
+                </button>
+              </div>
+            ) : selected ? (
+              <>
+                <div className="shrink-0 p-5 pb-0">
+                  {selected.coverImage ? (
+                    <div className="flex max-h-[40vh] items-center justify-center overflow-auto rounded-xl bg-[#f4f1ea]">
+                      <img
+                        src={selected.coverImage}
+                        alt=""
+                        className="max-h-[40vh] w-auto max-w-full object-contain"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex h-28 items-center justify-center rounded-xl bg-[#f4f1ea] text-sm text-[#5c6770]">
+                      No image
+                    </div>
+                  )}
+                  <h2
+                    id="community-quiz-title"
+                    className="mt-4 text-xl font-semibold text-[#1c2a33]"
+                  >
+                    {selected.name.trim() || "Untitled Quiz"}
+                  </h2>
+                  {selected.author ? (
+                    <p className="mt-1 text-sm text-[#5c6770]">by {selected.author}</p>
+                  ) : null}
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-[#4a5560]">
+                    {selected.description.trim() || "No description"}
+                  </p>
+                </div>
+                <div className="shrink-0 border-t border-[#1c2a33]/10 p-5">
+                  {playError ? (
+                    <p className="mb-3 text-sm font-medium text-[#7a3b3b]" role="alert">
+                      {playError}
+                    </p>
+                  ) : null}
+                  <div className="mb-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyLink()}
+                      className="flex-1 cursor-pointer rounded-full border border-[#2f5d76] bg-white px-4 py-2.5 text-sm font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/5"
+                    >
+                      {copied ? "Copied" : "Copy link"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={likeBusy}
+                      onClick={() => void handleLike()}
+                      className={`flex-1 cursor-pointer rounded-full border px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60 ${
+                        selected.liked
+                          ? "border-[#2f5d76] bg-[#2f5d76] text-[#f8fafc]"
+                          : "border-[#2f5d76] bg-white text-[#2f5d76] hover:bg-[#2f5d76]/5"
+                      }`}
+                    >
+                      {selected.liked ? "Liked" : "Like"} · {selected.likes}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={playBusy}
+                    onClick={() => void handlePlay()}
+                    className="w-full cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {playBusy ? "Loading…" : "Play quiz"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="p-6">
+                <p className="text-sm text-[#4a5560]">Loading quiz…</p>
+              </div>
+            )}
           </div>
         </div>
       )}

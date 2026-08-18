@@ -18,6 +18,7 @@ export type CommunityQuizSummary = {
   description: string;
   coverImage: string;
   likes: number;
+  liked?: boolean;
   publishedAt: number;
   author: string;
 };
@@ -476,14 +477,35 @@ export async function listCommunityQuizzes(
   return Array.isArray(data?.quizzes) ? data.quizzes : [];
 }
 
+export async function getCommunityQuiz(id: string): Promise<CommunityQuizSummary> {
+  const data = await apiJson<{ quiz: CommunityQuizSummary }>(
+    `/community/quizzes/${encodeURIComponent(id)}`,
+  );
+  if (!data?.quiz?.id) {
+    throw new Error("Quiz not found.");
+  }
+  return data.quiz;
+}
+
 export async function getPublishedQuiz(id: string): Promise<StoredQuizDocument> {
   const data = await apiJson<{ quiz: StoredQuizDocument }>(
-    `/community/quizzes/${encodeURIComponent(id)}`,
+    `/community/quizzes/${encodeURIComponent(id)}/document`,
   );
   if (!data?.quiz || typeof data.quiz !== "object") {
     throw new Error("Quiz not found.");
   }
   return data.quiz;
+}
+
+export async function toggleCommunityLike(id: string): Promise<{ likes: number; liked: boolean }> {
+  const data = await apiJson<{ likes: number; liked: boolean }>(
+    `/community/quizzes/${encodeURIComponent(id)}/like`,
+    { method: "POST" },
+  );
+  return {
+    likes: Number(data?.likes) || 0,
+    liked: Boolean(data?.liked),
+  };
 }
 
 export async function saveStoredQuiz(doc: StoredQuizDocument, options?: { keepalive?: boolean }) {
