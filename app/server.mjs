@@ -259,7 +259,12 @@ async function proxyApi(req, res) {
       }),
     }).catch(() => {});
     // #endregion
-    sendJson(res, 502, { error: "Could not reach the API server." });
+    sendJson(res, 502, {
+      error:
+        causeInfo?.code === "ENOTFOUND"
+          ? "Could not DNS-resolve API_URL. Copy RAILWAY_PRIVATE_DOMAIN from the server service Variables, or use the server's public https://….up.railway.app URL."
+          : "Could not reach the API server.",
+    });
   }
 }
 
