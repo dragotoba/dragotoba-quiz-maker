@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import AccountButton from "@/components/AccountButton";
+import { getToken } from "@/lib/auth";
 import {
   createStoredQuiz,
   deleteStoredQuiz,
   listQuizSummaries,
+  localQuizCount,
   type QuizSummary,
 } from "@/lib/quizStorage";
 
@@ -23,24 +25,51 @@ function formatUpdatedAt(timestamp: number) {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [quizzes, setQuizzes] = useState<QuizSummary[]>(() => listQuizSummaries());
+  const [quizzes, setQuizzes] = useState<QuizSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [migrating, setMigrating] = useState(false);
+  const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{
     id: string;
     name: string;
   } | null>(null);
   const [deleteCountdown, setDeleteCountdown] = useState(DELETE_COUNTDOWN_SECONDS);
 
-  const empty = quizzes.length === 0;
+  const empty = !loading && !error && quizzes.length === 0;
   const sorted = useMemo(() => quizzes, [quizzes]);
   const deleteLabel = deleteConfirm?.name.trim() || "Untitled Quiz";
 
-  function refresh() {
-    setQuizzes(listQuizSummaries());
+  async function refresh() {
+    const uploading = Boolean(getToken()) && localQuizCount() > 0;
+    setMigrating(uploading);
+    setError("");
+    try {
+      const list = await listQuizSummaries();
+      setQuizzes(list);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load quizzes.");
+    } finally {
+      setLoading(false);
+      setMigrating(false);
+    }
   }
 
-  function handleCreate() {
-    const quiz = createStoredQuiz();
-    navigate(`/quiz/${quiz.id}`);
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  async function handleCreate() {
+    if (creating) return;
+    setCreating(true);
+    setError("");
+    try {
+      const quiz = await createStoredQuiz();
+      navigate(`/quiz/${quiz.id}`);
+    } catch (err) {
+      setCreating(false);
+      setError(err instanceof Error ? err.message : "Could not create quiz.");
+    }
   }
 
   function openDeleteConfirm(id: string, name: string) {
@@ -51,11 +80,16 @@ export default function Dashboard() {
     setDeleteConfirm(null);
   }
 
-  function confirmDelete() {
+  async function confirmDelete() {
     if (!deleteConfirm || deleteCountdown > 0) return;
-    deleteStoredQuiz(deleteConfirm.id);
+    const id = deleteConfirm.id;
     setDeleteConfirm(null);
-    refresh();
+    try {
+      await deleteStoredQuiz(id);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete quiz.");
+    }
   }
 
   useEffect(() => {
@@ -99,20 +133,48 @@ export default function Dashboard() {
 
           <button
             type="button"
-            onClick={handleCreate}
-            className="cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e]"
+            onClick={() => void handleCreate()}
+            disabled={creating || migrating}
+            className="cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e] disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Create New Quiz
+            {creating ? "Creating…" : "Create New Quiz"}
           </button>
         </div>
 
-        {empty ? (
+        {migrating ? (
+          <p className="mb-4 text-sm text-[#4a5560]">
+            Saving your local quizzes to your account…
+          </p>
+        ) : null}
+
+        {error ? (
+          <p className="mb-4 text-sm font-medium text-[#7a3b3b]" role="alert">
+            {error}{" "}
+            <button
+              type="button"
+              onClick={() => {
+                setLoading(true);
+                void refresh();
+              }}
+              className="cursor-pointer border-none bg-transparent p-0 font-semibold text-[#2f5d76] hover:text-[#244a5e]"
+            >
+              Retry
+            </button>
+          </p>
+        ) : null}
+
+        {loading ? (
+          <p className="border-t border-[#1c2a33]/15 pt-10 text-sm text-[#4a5560]">
+            Loading quizzes…
+          </p>
+        ) : empty ? (
           <div className="border-t border-[#1c2a33]/15 pt-10">
             <p className="text-base text-[#4a5560]">No quizzes yet.</p>
             <button
               type="button"
-              onClick={handleCreate}
-              className="mt-5 cursor-pointer border-none bg-transparent p-0 text-sm font-semibold text-[#2f5d76] hover:text-[#244a5e]"
+              onClick={() => void handleCreate()}
+              disabled={creating || migrating}
+              className="mt-5 cursor-pointer border-none bg-transparent p-0 text-sm font-semibold text-[#2f5d76] hover:text-[#244a5e] disabled:opacity-60"
             >
               Create your first quiz →
             </button>
@@ -181,7 +243,7 @@ export default function Dashboard() {
               <button
                 type="button"
                 disabled={deleteCountdown > 0}
-                onClick={confirmDelete}
+                onClick={() => void confirmDelete()}
                 className="cursor-pointer rounded-lg border border-[#c0392b] bg-[#c0392b] px-3 py-2 text-sm font-medium text-white hover:bg-[#a93226] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-[#c0392b]"
               >
                 {deleteCountdown > 0 ? `Delete (${deleteCountdown})` : "Delete"}

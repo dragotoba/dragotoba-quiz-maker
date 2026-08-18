@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { getStoredUser, loginAccount } from "@/lib/auth";
+import { migrateLocalQuizzesIfNeeded } from "@/lib/quizStorage";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -20,6 +21,11 @@ export default function Login() {
     setBusy(true);
     try {
       await loginAccount({ identifier, password });
+      try {
+        await migrateLocalQuizzesIfNeeded();
+      } catch {
+        // Dashboard retries the upload if local quizzes remain.
+      }
       navigate("/dashboard", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not sign in.");

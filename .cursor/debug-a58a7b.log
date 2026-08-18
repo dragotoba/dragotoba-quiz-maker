@@ -1,0 +1,4 @@
+{"sessionId":"a58a7b","hypothesisId":"E","location":"app/src/lib/auth.ts:authRequest","message":"client request start","data":{"url":"/api/auth/login"},"timestamp":1787065168318}
+{"sessionId":"a58a7b","hypothesisId":"E","location":"app/src/lib/auth.ts:authRequest","message":"client response","data":{"url":"/api/auth/login","status":200,"json":true,"error":null,"preview":"{\"token\":\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1NWZhYTljNS1kZGJmLTQyY"},"timestamp":1787065168854}
+{"sessionId":"a58a7b","hypothesisId":"E","location":"app/src/lib/auth.ts:authRequest","message":"client request start","data":{"url":"/api/auth/signup"},"timestamp":1787065207890}
+{"sessionId":"a58a7b","hypothesisId":"E","location":"app/src/lib/auth.ts:authRequest","message":"client response","data":{"url":"/api/auth/signup","status":201,"json":true,"error":null,"preview":"{\"token\":\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjZGVmYzZkNi0yMTgyLTQ4M"},"timestamp":1787065208503}

@@ -43,6 +43,11 @@ export function clearSession() {
   localStorage.removeItem(USER_KEY);
 }
 
+export function authHeaders(): HeadersInit {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function authRequest(path: string, body: unknown): Promise<AuthResponse> {
   const res = await fetch(`/api${path}`, {
     method: "POST",

@@ -16,6 +16,7 @@ import {
   saveStoredQuiz,
   type StoredQuizDocument,
 } from "@/lib/quizStorage";
+import { getToken } from "@/lib/auth";
 
 type QuestionBox = {
   id: string;
@@ -4208,24 +4209,21 @@ function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
   };
 }
 
-function loadQuizById(id: string): PersistedQuiz | null {
-  const stored = getStoredQuiz(id);
-  if (!stored) return null;
-  return parseStoredQuiz(stored);
-}
-
-function persistQuiz(quiz: PersistedQuiz) {
-  saveStoredQuiz({
-    version: 1,
-    id: quiz.id,
-    projectName: quiz.projectName,
-    updatedAt: quiz.updatedAt,
-    variables: quiz.variables,
-    defaultAnswers: quiz.defaultAnswers,
-    sections: quiz.sections,
-    activeSectionId: quiz.activeSectionId,
-    results: quiz.results,
-  });
+function persistQuiz(quiz: PersistedQuiz, options?: { keepalive?: boolean }) {
+  void saveStoredQuiz(
+    {
+      version: 1,
+      id: quiz.id,
+      projectName: quiz.projectName,
+      updatedAt: quiz.updatedAt,
+      variables: quiz.variables,
+      defaultAnswers: quiz.defaultAnswers,
+      sections: quiz.sections,
+      activeSectionId: quiz.activeSectionId,
+      results: quiz.results,
+    },
+    options,
+  );
 }
 
 function cloneSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
@@ -4234,11 +4232,63 @@ function cloneSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
 
 export default function CreateQuiz() {
   const { quizId } = useParams<{ quizId: string }>();
+  const [initialQuiz, setInitialQuiz] = useState<PersistedQuiz | null | undefined>(
+    undefined,
+  );
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    if (!quizId) {
+      setInitialQuiz(null);
+      return;
+    }
+    let cancelled = false;
+    setInitialQuiz(undefined);
+    setLoadError("");
+    void (async () => {
+      try {
+        const stored = await getStoredQuiz(quizId);
+        if (cancelled) return;
+        setInitialQuiz(stored ? parseStoredQuiz(stored) : null);
+      } catch (error) {
+        if (cancelled) return;
+        setLoadError(error instanceof Error ? error.message : "Could not load quiz.");
+        setInitialQuiz(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [quizId]);
+
   if (!quizId) {
     return <Navigate to="/dashboard" replace />;
   }
 
-  const initialQuiz = loadQuizById(quizId);
+  if (loadError) {
+    return (
+      <main className="qh-page flex min-h-screen w-full items-center justify-center px-6 font-[Poppins,sans-serif] text-[#1a1a1a]">
+        <div className="max-w-md text-center">
+          <p className="text-sm font-medium text-[#7a3b3b]">{loadError}</p>
+          <Link
+            to="/dashboard"
+            className="mt-4 inline-block text-sm font-semibold text-[#2f5d76] no-underline hover:text-[#244a5e]"
+          >
+            ← Your Quizzes
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
+  if (initialQuiz === undefined) {
+    return (
+      <main className="qh-page flex min-h-screen w-full items-center justify-center px-6 font-[Poppins,sans-serif] text-[#1a1a1a]">
+        <p className="text-sm text-[#4a5560]">Loading quiz…</p>
+      </main>
+    );
+  }
+
   if (!initialQuiz) {
     return <Navigate to="/dashboard" replace />;
   }
@@ -4882,14 +4932,15 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
   }
 
   useEffect(() => {
+    const persistDelay = getToken() ? 500 : 200;
     const timeoutId = window.setTimeout(() => {
       persistQuiz(getPersistedQuiz());
-    }, 200);
+    }, persistDelay);
     return () => window.clearTimeout(timeoutId);
   }, [projectName, sectionName, sections, activeSectionId, boxes, variables, localVariables, defaultAnswers, localDefaultAnswers, transitions, camera, results]);
 
   useEffect(() => {
-    const flush = () => persistQuiz(getPersistedQuiz());
+    const flush = () => persistQuiz(getPersistedQuiz(), { keepalive: true });
     window.addEventListener("beforeunload", flush);
     window.addEventListener("pagehide", flush);
     return () => {
