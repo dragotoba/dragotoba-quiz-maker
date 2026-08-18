@@ -31,6 +31,18 @@ function send(res, status, body, headers = {}) {
   res.end(body);
 }
 
+function sendJson(res, status, obj) {
+  send(res, status, JSON.stringify(obj), {
+    "Content-Type": "application/json; charset=utf-8",
+  });
+}
+
+function hostName(value) {
+  return String(value || "")
+    .split(":")[0]
+    .toLowerCase();
+}
+
 function proxyLog(message, data = {}) {
   console.log(`[proxy] ${message}`, data);
 }
@@ -68,6 +80,7 @@ async function proxyApi(req, res) {
         hasApiUrl: Boolean(base),
         apiHost: base ? (() => { try { return new URL(base).host; } catch { return "invalid"; } })() : null,
         targetHref,
+        incomingHost: hostName(req.headers.host),
       },
       timestamp: Date.now(),
     }),
@@ -75,7 +88,51 @@ async function proxyApi(req, res) {
   // #endregion
   if (!base) {
     proxyLog("API_URL is not set", { method: req.method, reqUrl });
-    send(res, 502, "API_URL is not set");
+    sendJson(res, 502, { error: "API_URL is not set on the app service." });
+    return;
+  }
+
+  let target;
+  try {
+    target = new URL(reqUrl, `${base}/`);
+  } catch (error) {
+    proxyLog("could not build upstream URL", {
+      reqUrl,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    sendJson(res, 502, { error: "API_URL is invalid." });
+    return;
+  }
+
+  const incomingHost = hostName(req.headers.host);
+  const targetHost = hostName(target.host);
+  if (incomingHost && targetHost === incomingHost) {
+    proxyLog("API_URL points at this website, not the API server", {
+      incomingHost,
+      targetHost,
+      target: target.href,
+    });
+    // #region agent log
+    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "a58a7b",
+      },
+      body: JSON.stringify({
+        sessionId: "a58a7b",
+        hypothesisId: "C",
+        location: "app/server.mjs:proxyApi",
+        message: "self-proxy blocked",
+        data: { incomingHost, targetHost, target: target.href },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+    sendJson(res, 502, {
+      error:
+        "API_URL points at the website. Set it to the server service URL (not the app URL).",
+    });
     return;
   }
 
@@ -90,7 +147,6 @@ async function proxyApi(req, res) {
   if (authorization) headers.authorization = authorization;
 
   try {
-    const target = new URL(reqUrl, `${base}/`);
     proxyLog("forwarding", {
       method: req.method,
       reqUrl,
@@ -159,7 +215,7 @@ async function proxyApi(req, res) {
       }),
     }).catch(() => {});
     // #endregion
-    send(res, 502, "Bad Gateway");
+    sendJson(res, 502, { error: "Could not reach the API server." });
   }
 }
 
