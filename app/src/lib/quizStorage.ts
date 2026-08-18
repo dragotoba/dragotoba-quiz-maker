@@ -10,6 +10,26 @@ export type QuizSummary = {
   updatedAt: number;
 };
 
+export type QuizListing = {
+  description: string;
+  coverImage: string;
+  unlisted: boolean;
+};
+
+export function emptyListing(): QuizListing {
+  return { description: "", coverImage: "", unlisted: false };
+}
+
+export function normalizeListing(raw: unknown): QuizListing {
+  if (!raw || typeof raw !== "object") return emptyListing();
+  const data = raw as Record<string, unknown>;
+  return {
+    description: typeof data.description === "string" ? data.description : "",
+    coverImage: typeof data.coverImage === "string" ? data.coverImage : "",
+    unlisted: data.unlisted === true,
+  };
+}
+
 /** Serialized quiz document stored in the library. */
 export type StoredQuizDocument = {
   version: 1;
@@ -20,6 +40,7 @@ export type StoredQuizDocument = {
   defaultAnswers: unknown;
   sections: unknown;
   activeSectionId: string;
+  listing?: QuizListing;
   /** Results page (scroll document); optional for older saves. */
   results?: unknown;
   /** @deprecated migrated into sections */
@@ -81,6 +102,7 @@ function emptyDocument(id: string = crypto.randomUUID()): StoredQuizDocument {
     sections: [section],
     activeSectionId: section.id,
     results: { textBoxes: [] },
+    listing: emptyListing(),
   };
 }
 
@@ -150,6 +172,7 @@ function asDocument(raw: unknown): StoredQuizDocument | null {
     sections,
     activeSectionId,
     results: data.results ?? { textBoxes: [] },
+    listing: normalizeListing(data.listing),
   };
 }
 
