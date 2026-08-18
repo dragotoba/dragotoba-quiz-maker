@@ -47,10 +47,30 @@ function proxyLog(message, data = {}) {
   console.log(`[proxy] ${message}`, data);
 }
 
+function describeApiUrl(raw) {
+  const value = String(raw || "");
+  return {
+    empty: value.length === 0,
+    unresolvedTemplate: value.includes("${{") || /\$\{[^{]/.test(value),
+    startsWithHttp: /^https?:\/\//i.test(value),
+    preview: value.slice(0, 120),
+  };
+}
+
+function apiBase() {
+  return process.env.API_URL?.trim().replace(/\/$/, "") || "";
+}
+
+{
+  const info = describeApiUrl(process.env.API_URL);
+  proxyLog("boot API_URL", info);
+}
+
 async function proxyApi(req, res) {
   const started = Date.now();
   const reqUrl = req.url || "/api";
-  const base = process.env.API_URL?.replace(/\/$/, "");
+  const base = apiBase();
+  const apiInfo = describeApiUrl(base);
   let targetHref = null;
   try {
     targetHref = base ? new URL(reqUrl, `${base}/`).href : null;
@@ -58,7 +78,7 @@ async function proxyApi(req, res) {
     targetHref = null;
     proxyLog("invalid API_URL or request path", {
       reqUrl,
-      hasApiUrl: Boolean(base),
+      ...apiInfo,
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -86,6 +106,15 @@ async function proxyApi(req, res) {
     }),
   }).catch(() => {});
   // #endregion
+  if (apiInfo.unresolvedTemplate) {
+    proxyLog("API_URL still contains ${{ }} and was not interpolated", apiInfo);
+    sendJson(res, 502, {
+      error:
+        "API_URL is still a Railway template. Set it to http://<private-domain>:8080 using the server service's RAILWAY_PRIVATE_DOMAIN value.",
+    });
+    return;
+  }
+
   if (!base) {
     proxyLog("API_URL is not set", { method: req.method, reqUrl });
     sendJson(res, 502, { error: "API_URL is not set on the app service." });
@@ -98,9 +127,14 @@ async function proxyApi(req, res) {
   } catch (error) {
     proxyLog("could not build upstream URL", {
       reqUrl,
+      ...apiInfo,
       error: error instanceof Error ? error.message : String(error),
     });
-    sendJson(res, 502, { error: "API_URL is invalid." });
+    sendJson(res, 502, {
+      error: apiInfo.unresolvedTemplate
+        ? "API_URL is still a Railway template. Paste the resolved private URL instead."
+        : "API_URL is invalid.",
+    });
     return;
   }
 
@@ -191,12 +225,22 @@ async function proxyApi(req, res) {
     res.end(responseBody);
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
+    const cause = error instanceof Error ? error.cause : null;
+    const causeInfo =
+      cause && typeof cause === "object"
+        ? {
+            message: cause instanceof Error ? cause.message : String(cause),
+            code: "code" in cause ? cause.code : null,
+            errno: "errno" in cause ? cause.errno : null,
+          }
+        : null;
     proxyLog("upstream fetch failed", {
       method: req.method,
       reqUrl,
       target: targetHref,
       ms: Date.now() - started,
       error: errMsg,
+      cause: causeInfo,
     });
     // #region agent log
     fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
@@ -210,7 +254,7 @@ async function proxyApi(req, res) {
         hypothesisId: "B",
         location: "app/server.mjs:proxyApi",
         message: "proxy upstream failed",
-        data: { reqUrl, targetHref, ms: Date.now() - started, error: errMsg },
+        data: { reqUrl, targetHref, ms: Date.now() - started, error: errMsg, cause: causeInfo },
         timestamp: Date.now(),
       }),
     }).catch(() => {});

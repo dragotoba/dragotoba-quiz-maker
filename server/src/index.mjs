@@ -245,7 +245,7 @@ app.get("/api/auth/me", async (req, res) => {
   }
 });
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, "::", () => {
   const addr = server.address();
   authLog("listening", {
     port: PORT,
@@ -253,7 +253,7 @@ const server = app.listen(PORT, () => {
     address: addr,
   });
   console.log(
-    `API server listening on port ${PORT} (PORT env=${process.env.PORT ?? "unset"}). Railway public domain target port must match this.`,
+    `API server listening on [::]:${PORT} (PORT env=${process.env.PORT ?? "unset"}). Railway private networking requires IPv6 (::).`,
   );
 });
 
