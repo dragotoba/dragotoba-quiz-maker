@@ -1,12 +1,14 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
-import { getStoredUser, loginAccount } from "@/lib/auth";
+import { getStoredUser, signupAccount } from "@/lib/auth";
 
-export default function Login() {
+export default function Signup() {
   const navigate = useNavigate();
   const existing = getStoredUser();
-  const [identifier, setIdentifier] = useState("");
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -17,12 +19,16 @@ export default function Login() {
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
     setBusy(true);
     try {
-      await loginAccount({ identifier, password });
+      await signupAccount({ username, email, password });
       navigate("/dashboard", { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not sign in.");
+      setError(err instanceof Error ? err.message : "Could not create account.");
     } finally {
       setBusy(false);
     }
@@ -43,22 +49,38 @@ export default function Login() {
 
         <div className="mt-6 rounded-2xl border border-[#1c2a33]/10 bg-white/80 p-8 shadow-[0_8px_32px_rgba(0,0,0,0.08)]">
           <h1 className="text-2xl font-bold tracking-[-0.02em] text-[#1c2a33]">
-            Log in
+            Create account
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-[#4a5560]">
-            Sign in to your Dragotoba account.
+            Sign up with a username, email, and password.
           </p>
 
           <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
             <label className="block text-sm text-[#1c2a33]">
-              <span className="font-medium text-[#4a5560]">Email or username</span>
+              <span className="font-medium text-[#4a5560]">Username</span>
               <input
                 type="text"
-                name="identifier"
+                name="username"
                 autoComplete="username"
                 required
-                value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
+                minLength={3}
+                maxLength={32}
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="yourname"
+                className={fieldClass}
+              />
+            </label>
+
+            <label className="block text-sm text-[#1c2a33]">
+              <span className="font-medium text-[#4a5560]">Email</span>
+              <input
+                type="email"
+                name="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
                 className={fieldClass}
               />
@@ -69,11 +91,27 @@ export default function Login() {
               <input
                 type="password"
                 name="password"
-                autoComplete="current-password"
+                autoComplete="new-password"
                 required
+                minLength={8}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="At least 8 characters"
+                className={fieldClass}
+              />
+            </label>
+
+            <label className="block text-sm text-[#1c2a33]">
+              <span className="font-medium text-[#4a5560]">Confirm password</span>
+              <input
+                type="password"
+                name="confirmPassword"
+                autoComplete="new-password"
+                required
+                minLength={8}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Repeat password"
                 className={fieldClass}
               />
             </label>
@@ -89,17 +127,17 @@ export default function Login() {
               disabled={busy}
               className="mt-2 w-full cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {busy ? "Signing in…" : "Sign in"}
+              {busy ? "Creating account…" : "Create account"}
             </button>
           </form>
 
           <p className="mt-6 text-center text-sm text-[#5c6770]">
-            Don&apos;t have an account?{" "}
+            Already have an account?{" "}
             <Link
-              to="/signup"
+              to="/login"
               className="font-semibold text-[#2f5d76] no-underline hover:text-[#244a5e]"
             >
-              Sign up
+              Log in
             </Link>
           </p>
         </div>

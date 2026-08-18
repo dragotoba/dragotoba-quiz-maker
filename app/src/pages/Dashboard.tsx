@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import AccountButton from "@/components/AccountButton";
 import {
   createStoredQuiz,
   deleteStoredQuiz,
@@ -77,12 +78,7 @@ export default function Dashboard() {
 
   return (
     <main className="qh-page relative min-h-screen w-full font-[Poppins,sans-serif] text-[#1a1a1a]">
-      <Link
-        to="/login"
-        className="absolute top-6 right-6 rounded-full border border-[#2f5d76]/25 bg-white/70 px-4 py-2 text-sm font-semibold text-[#2f5d76] no-underline shadow-sm hover:bg-white hover:text-[#244a5e] sm:right-8"
-      >
-        Log In
-      </Link>
+      <AccountButton className="absolute top-6 right-6 sm:right-8" />
 
       <div className="mx-auto flex w-full max-w-3xl flex-col px-6 py-10 sm:px-8 sm:py-14">
         <div className="mb-10 flex flex-wrap items-end justify-between gap-4">

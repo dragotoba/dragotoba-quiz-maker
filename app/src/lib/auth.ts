@@ -1,0 +1,82 @@
+export type AuthUser = {
+  id: string;
+  username: string;
+  email: string;
+  displayName: string | null;
+};
+
+type AuthResponse = {
+  token: string;
+  user: AuthUser;
+};
+
+const TOKEN_KEY = "dragotoba.auth.token";
+const USER_KEY = "dragotoba.auth.user";
+
+export function getToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function getStoredUser(): AuthUser | null {
+  try {
+    const raw = localStorage.getItem(USER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AuthUser;
+    if (!parsed?.id || !parsed.username || !parsed.email) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function setSession(token: string, user: AuthUser) {
+  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+
+export function clearSession() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
+
+async function authRequest(path: string, body: unknown): Promise<AuthResponse> {
+  const res = await fetch(`/api${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => null)) as
+    | (AuthResponse & { error?: string })
+    | null;
+  if (!res.ok || !data?.token || !data.user) {
+    throw new Error(data?.error || "Request failed.");
+  }
+  return data;
+}
+
+export async function signupAccount(input: {
+  username: string;
+  email: string;
+  password: string;
+}) {
+  const result = await authRequest("/auth/signup", input);
+  setSession(result.token, result.user);
+  return result.user;
+}
+
+export async function loginAccount(input: {
+  identifier: string;
+  password: string;
+}) {
+  const result = await authRequest("/auth/login", input);
+  setSession(result.token, result.user);
+  return result.user;
+}
+
+export function logoutAccount() {
+  clearSession();
+}
