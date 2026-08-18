@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { getStoredUser, signupAccount } from "@/lib/auth";
+import { migrateLocalQuizzesIfNeeded } from "@/lib/quizStorage";
 
 export default function Signup() {
   const navigate = useNavigate();
@@ -26,6 +27,11 @@ export default function Signup() {
     setBusy(true);
     try {
       await signupAccount({ username, email, password });
+      try {
+        await migrateLocalQuizzesIfNeeded();
+      } catch {
+        // Dashboard retries the upload if local quizzes remain.
+      }
       navigate("/dashboard", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create account.");

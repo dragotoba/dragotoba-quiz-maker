@@ -13,6 +13,7 @@ import {
   validateSignup,
   getJwtSecret,
 } from "./auth.mjs";
+import { registerQuizRoutes } from "./quizzes.mjs";
 
 const PORT = Number(process.env.PORT) || 3001;
 
@@ -35,7 +36,7 @@ try {
 const app = express();
 const corsOrigin = process.env.CORS_ORIGIN?.trim();
 app.use(cors({ origin: corsOrigin || true }));
-app.use(express.json({ limit: "32kb" }));
+app.use(express.json({ limit: "8mb" }));
 
 app.get("/health", async (_req, res) => {
   try {
@@ -157,6 +158,19 @@ app.get("/api/auth/me", async (req, res) => {
     res.status(500).json({ error: "Could not load account." });
   }
 });
+
+function requireUser(req, res, next) {
+  const token = readBearerToken(req);
+  const userId = token ? userIdFromToken(token) : null;
+  if (!userId) {
+    res.status(401).json({ error: "Not signed in." });
+    return;
+  }
+  req.userId = userId;
+  next();
+}
+
+registerQuizRoutes(app, pool, requireUser);
 
 app.listen(PORT, "::", () => {
   console.log(`API server listening on [::]:${PORT}`);

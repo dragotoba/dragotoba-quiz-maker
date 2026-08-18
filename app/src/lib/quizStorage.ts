@@ -1,3 +1,5 @@
+import { authHeaders, getToken } from "./auth";
+
 export const DEFAULT_PROJECT_NAME = "Untitled Quiz";
 export const LIBRARY_KEY = "dragotoba-quiz-maker:library";
 export const LEGACY_KEY = "dragotoba-quiz-maker:v1";
@@ -200,7 +202,11 @@ function writeLibrary(library: QuizLibrary) {
   }
 }
 
-export function listQuizSummaries(): QuizSummary[] {
+function usesRemoteStorage() {
+  return Boolean(getToken());
+}
+
+function listLocalSummaries(): QuizSummary[] {
   return readLibrary()
     .quizzes.map((quiz) => ({
       id: quiz.id,
@@ -210,16 +216,15 @@ export function listQuizSummaries(): QuizSummary[] {
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-export function getStoredQuiz(id: string): StoredQuizDocument | null {
+function getLocalQuiz(id: string): StoredQuizDocument | null {
   return readLibrary().quizzes.find((quiz) => quiz.id === id) ?? null;
 }
 
-export function saveStoredQuiz(doc: StoredQuizDocument) {
+function saveLocalQuiz(doc: StoredQuizDocument) {
   const library = readLibrary();
   const next: StoredQuizDocument = {
     ...doc,
     version: 1,
-    updatedAt: Date.now(),
   };
   const index = library.quizzes.findIndex((quiz) => quiz.id === next.id);
   if (index >= 0) library.quizzes[index] = next;
@@ -227,13 +232,7 @@ export function saveStoredQuiz(doc: StoredQuizDocument) {
   writeLibrary(library);
 }
 
-export function createStoredQuiz(): StoredQuizDocument {
-  const doc = emptyDocument();
-  saveStoredQuiz(doc);
-  return doc;
-}
-
-export function deleteStoredQuiz(id: string) {
+function deleteLocalQuiz(id: string) {
   const library = readLibrary();
   writeLibrary({
     version: 2,
@@ -241,4 +240,212 @@ export function deleteStoredQuiz(id: string) {
   });
 }
 
-export { nextSectionName, emptySection };
+function clearLocalLibrary() {
+  try {
+    localStorage.removeItem(LIBRARY_KEY);
+    localStorage.removeItem(LEGACY_KEY);
+  } catch {
+    writeLibrary({ version: 2, quizzes: [] });
+  }
+}
+
+function peekLocalQuizzes(): StoredQuizDocument[] {
+  try {
+    const raw = localStorage.getItem(LIBRARY_KEY);
+    if (raw) {
+      const data = JSON.parse(raw) as Record<string, unknown>;
+      if (data?.version === 2 && Array.isArray(data.quizzes)) {
+        return data.quizzes
+          .map((quiz) => asDocument(quiz))
+          .filter((quiz): quiz is StoredQuizDocument => quiz !== null);
+      }
+    }
+  } catch {
+    // fall through to legacy
+  }
+
+  try {
+    const raw = localStorage.getItem(LEGACY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    const doc = asDocument({
+      ...(typeof parsed === "object" && parsed ? parsed : {}),
+      id: crypto.randomUUID(),
+      updatedAt: Date.now(),
+      version: 1,
+    });
+    return doc ? [doc] : [];
+  } catch {
+    return [];
+  }
+}
+
+function localQuizCount() {
+  return peekLocalQuizzes().length;
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function withValidId(doc: StoredQuizDocument): StoredQuizDocument {
+  if (UUID_RE.test(doc.id)) return doc;
+  return { ...doc, id: crypto.randomUUID() };
+}
+
+async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = {
+    ...(init.body ? { "Content-Type": "application/json" } : {}),
+    ...(authHeaders() as Record<string, string>),
+  };
+  const extra = init.headers;
+  if (extra && typeof extra === "object" && !Array.isArray(extra)) {
+    Object.assign(headers, extra);
+  }
+
+  const res = await fetch(`/api${path}`, { ...init, headers });
+  if (res.status === 204) return undefined as T;
+
+  const raw = await res.text();
+  let data: (T & { error?: string }) | null = null;
+  try {
+    data = raw ? (JSON.parse(raw) as T & { error?: string }) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    throw new Error(
+      data && typeof data === "object" && "error" in data && data.error
+        ? String(data.error)
+        : "Request failed.",
+    );
+  }
+  return data as T;
+}
+
+function contentKey(doc: StoredQuizDocument) {
+  const { updatedAt: _updatedAt, ...rest } = doc;
+  return JSON.stringify(rest);
+}
+
+const pendingSaves = new Map<string, StoredQuizDocument>();
+const inflightSaves = new Map<string, Promise<void>>();
+const lastSavedKey = new Map<string, string>();
+
+async function putRemoteQuiz(doc: StoredQuizDocument, keepalive = false) {
+  const key = contentKey(doc);
+  if (lastSavedKey.get(doc.id) === key) return;
+  await apiJson<{ quiz: StoredQuizDocument }>(`/quizzes/${encodeURIComponent(doc.id)}`, {
+    method: "PUT",
+    body: JSON.stringify({ quiz: doc }),
+    keepalive,
+  });
+  lastSavedKey.set(doc.id, key);
+}
+
+function enqueueRemoteSave(doc: StoredQuizDocument) {
+  pendingSaves.set(doc.id, doc);
+  const existing = inflightSaves.get(doc.id);
+  if (existing) return existing;
+
+  const run = (async () => {
+    try {
+      while (pendingSaves.has(doc.id)) {
+        const next = pendingSaves.get(doc.id);
+        pendingSaves.delete(doc.id);
+        if (next) await putRemoteQuiz(next);
+      }
+    } finally {
+      inflightSaves.delete(doc.id);
+    }
+  })();
+
+  inflightSaves.set(doc.id, run);
+  return run;
+}
+
+let migratePromise: Promise<void> | null = null;
+
+export async function migrateLocalQuizzesIfNeeded() {
+  if (!usesRemoteStorage()) return;
+  if (migratePromise) return migratePromise;
+
+  migratePromise = (async () => {
+    const quizzes = peekLocalQuizzes().map(withValidId);
+    if (quizzes.length === 0) return;
+    writeLibrary({ version: 2, quizzes });
+    await apiJson("/quizzes/import", {
+      method: "POST",
+      body: JSON.stringify({ quizzes }),
+    });
+    clearLocalLibrary();
+  })().finally(() => {
+    migratePromise = null;
+  });
+
+  return migratePromise;
+}
+
+export async function listQuizSummaries(): Promise<QuizSummary[]> {
+  if (!usesRemoteStorage()) return listLocalSummaries();
+  await migrateLocalQuizzesIfNeeded();
+  const data = await apiJson<{ quizzes: QuizSummary[] }>("/quizzes");
+  return Array.isArray(data?.quizzes) ? data.quizzes : [];
+}
+
+export async function getStoredQuiz(id: string): Promise<StoredQuizDocument | null> {
+  if (!usesRemoteStorage()) return getLocalQuiz(id);
+  await migrateLocalQuizzesIfNeeded();
+  try {
+    const data = await apiJson<{ quiz: StoredQuizDocument }>(
+      `/quizzes/${encodeURIComponent(id)}`,
+    );
+    const quiz = data?.quiz;
+    if (quiz && typeof quiz === "object") {
+      lastSavedKey.set(id, contentKey(quiz));
+      return quiz;
+    }
+    return null;
+  } catch (error) {
+    if (error instanceof Error && error.message === "Quiz not found.") return null;
+    throw error;
+  }
+}
+
+export async function saveStoredQuiz(doc: StoredQuizDocument, options?: { keepalive?: boolean }) {
+  const next: StoredQuizDocument = {
+    ...withValidId(doc),
+    version: 1,
+    updatedAt: Date.now(),
+  };
+  if (!usesRemoteStorage()) {
+    saveLocalQuiz(next);
+    return;
+  }
+  await migrateLocalQuizzesIfNeeded();
+  if (options?.keepalive) {
+    pendingSaves.set(next.id, next);
+    await putRemoteQuiz(next, true);
+    return;
+  }
+  await enqueueRemoteSave(next);
+}
+
+export async function createStoredQuiz(): Promise<StoredQuizDocument> {
+  const doc = emptyDocument();
+  await saveStoredQuiz(doc);
+  return doc;
+}
+
+export async function deleteStoredQuiz(id: string) {
+  if (!usesRemoteStorage()) {
+    deleteLocalQuiz(id);
+    lastSavedKey.delete(id);
+    return;
+  }
+  await migrateLocalQuizzesIfNeeded();
+  await apiJson(`/quizzes/${encodeURIComponent(id)}`, { method: "DELETE" });
+  lastSavedKey.delete(id);
+  pendingSaves.delete(id);
+}
+
+export { nextSectionName, emptySection, localQuizCount };
