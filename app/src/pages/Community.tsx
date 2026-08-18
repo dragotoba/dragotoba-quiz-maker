@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import AccountButton from "@/components/AccountButton";
 import {
+  getPublishedQuiz,
   listCommunityQuizzes,
   type CommunityQuizSummary,
   type CommunitySort,
 } from "@/lib/quizStorage";
+import { CreateQuizEditor, parseStoredQuiz } from "./CreateQuiz";
 
 const SORT_OPTIONS: { value: CommunitySort; label: string }[] = [
   { value: "trending", label: "Trending" },
@@ -18,6 +20,12 @@ export default function Community() {
   const [quizzes, setQuizzes] = useState<CommunityQuizSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [selected, setSelected] = useState<CommunityQuizSummary | null>(null);
+  const [playQuiz, setPlayQuiz] = useState<ReturnType<typeof parseStoredQuiz> | null>(
+    null,
+  );
+  const [playBusy, setPlayBusy] = useState(false);
+  const [playError, setPlayError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -40,6 +48,41 @@ export default function Community() {
       cancelled = true;
     };
   }, [sort]);
+
+  useEffect(() => {
+    if (!selected || playQuiz) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelected(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected, playQuiz]);
+
+  async function handlePlay() {
+    if (!selected || playBusy) return;
+    setPlayBusy(true);
+    setPlayError("");
+    try {
+      const doc = await getPublishedQuiz(selected.id);
+      setPlayQuiz(parseStoredQuiz(doc));
+      setSelected(null);
+    } catch (err) {
+      setPlayError(err instanceof Error ? err.message : "Could not load quiz.");
+    } finally {
+      setPlayBusy(false);
+    }
+  }
+
+  if (playQuiz) {
+    return (
+      <CreateQuizEditor
+        key={playQuiz.id}
+        initialQuiz={playQuiz}
+        playOnly
+        onExitPlay={() => setPlayQuiz(null)}
+      />
+    );
+  }
 
   return (
     <main className="qh-page relative min-h-screen w-full font-[Poppins,sans-serif] text-[#1a1a1a]">
@@ -97,7 +140,14 @@ export default function Community() {
           <ul className="mt-10 m-0 grid list-none grid-cols-1 gap-5 p-0 sm:grid-cols-2 lg:grid-cols-3">
             {quizzes.map((quiz) => (
               <li key={quiz.id}>
-                <article className="overflow-hidden rounded-2xl border border-[#1c2a33]/10 bg-white/80 shadow-[0_8px_24px_rgba(0,0,0,0.08)]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPlayError("");
+                    setSelected(quiz);
+                  }}
+                  className="w-full cursor-pointer overflow-hidden rounded-2xl border border-[#1c2a33]/10 bg-white/80 text-left shadow-[0_8px_24px_rgba(0,0,0,0.08)] hover:border-[#2f5d76]/40"
+                >
                   <div className="flex h-40 items-center justify-center bg-[#f4f1ea]">
                     {quiz.coverImage ? (
                       <img
@@ -122,12 +172,73 @@ export default function Community() {
                       {quiz.description.trim() || "No description"}
                     </p>
                   </div>
-                </article>
+                </button>
               </li>
             ))}
           </ul>
         )}
       </div>
+
+      {selected && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          role="presentation"
+          onClick={() => setSelected(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="community-quiz-title"
+            className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-[#1c2a33]/10 bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="shrink-0 p-5 pb-0">
+              {selected.coverImage ? (
+                <div className="flex max-h-[40vh] items-center justify-center overflow-auto rounded-xl bg-[#f4f1ea]">
+                  <img
+                    src={selected.coverImage}
+                    alt=""
+                    className="max-h-[40vh] w-auto max-w-full object-contain"
+                  />
+                </div>
+              ) : (
+                <div className="flex h-28 items-center justify-center rounded-xl bg-[#f4f1ea] text-sm text-[#5c6770]">
+                  No image
+                </div>
+              )}
+              <h2
+                id="community-quiz-title"
+                className="mt-4 text-xl font-semibold text-[#1c2a33]"
+              >
+                {selected.name.trim() || "Untitled Quiz"}
+              </h2>
+              {selected.author ? (
+                <p className="mt-1 text-sm text-[#5c6770]">by {selected.author}</p>
+              ) : null}
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-[#4a5560]">
+                {selected.description.trim() || "No description"}
+              </p>
+            </div>
+            <div className="shrink-0 border-t border-[#1c2a33]/10 p-5">
+              {playError ? (
+                <p className="mb-3 text-sm font-medium text-[#7a3b3b]" role="alert">
+                  {playError}
+                </p>
+              ) : null}
+              <button
+                type="button"
+                disabled={playBusy}
+                onClick={() => void handlePlay()}
+                className="w-full cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {playBusy ? "Loading…" : "Play quiz"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

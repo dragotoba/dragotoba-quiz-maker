@@ -4262,7 +4262,7 @@ function resultsItemSizeLimits(kind: ResultsItemKind) {
   };
 }
 
-function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
+export function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
   const defaultAnswers = Array.isArray(doc.defaultAnswers)
     ? (doc.defaultAnswers as AnswerOption[])
     : [createDefaultAnswer()];
@@ -4422,18 +4422,25 @@ export default function CreateQuiz() {
   );
 }
 
-function CreateQuizEditor({
+export function CreateQuizEditor({
   initialQuiz,
-  initiallyPublished,
+  initiallyPublished = false,
+  playOnly = false,
+  onExitPlay,
 }: {
   initialQuiz: PersistedQuiz;
-  initiallyPublished: boolean;
+  initiallyPublished?: boolean;
+  playOnly?: boolean;
+  onExitPlay?: () => void;
 }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialSection =
     initialQuiz.sections.find((s) => s.id === initialQuiz.activeSectionId) ??
     initialQuiz.sections[0];
+  const playBoot = playOnly
+    ? startQuiz(initialQuiz.sections, initialQuiz.variables)
+    : null;
 
   const quizIdRef = useRef(initialQuiz.id);
   const viewportRef = useRef<HTMLElement>(null);
@@ -4460,7 +4467,9 @@ function CreateQuizEditor({
   const [selectedTransitionId, setSelectedTransitionId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [deleteSectionConfirmOpen, setDeleteSectionConfirmOpen] = useState(false);
-  const [editorView, setEditorView] = useState<"section" | "results">("section");
+  const [editorView, setEditorView] = useState<"section" | "results">(
+    playBoot?.kind === "results" ? "results" : "section",
+  );
   const [results, setResults] = useState<ResultsDocument>(initialQuiz.results);
   const [selectedResultsTextId, setSelectedResultsTextId] = useState<string | null>(null);
   const [selectedResultsAxisId, setSelectedResultsAxisId] = useState<string | null>(null);
@@ -4473,15 +4482,17 @@ function CreateQuizEditor({
   const [selectedResultsImageId, setSelectedResultsImageId] = useState<
     string | null
   >(null);
-  const [resultsPreview, setResultsPreview] = useState(false);
+  const [resultsPreview, setResultsPreview] = useState(playBoot?.kind === "results");
   const [publishOpen, setPublishOpen] = useState(false);
   const [listing, setListing] = useState<QuizListing>(initialQuiz.listing);
   const [listingSaved, setListingSaved] = useState(false);
   const [published, setPublished] = useState(initiallyPublished);
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishError, setPublishError] = useState("");
-  const [quizScreen, setQuizScreen] = useState<QuizPlayScreen | null>(null);
-  const [quizGraph, setQuizGraph] = useState<QuizSection[] | null>(null);
+  const [quizScreen, setQuizScreen] = useState<QuizPlayScreen | null>(playBoot);
+  const [quizGraph, setQuizGraph] = useState<QuizSection[] | null>(
+    playOnly ? initialQuiz.sections : null,
+  );
   const [quizHistory, setQuizHistory] = useState<
     Array<QuizQuestionScreen & { selectedAnswerId: string | null }>
   >([]);
@@ -4535,7 +4546,7 @@ function CreateQuizEditor({
   const publishOpenRef = useRef(publishOpen);
   const listingRef = useRef(listing);
   const quizScreenRef = useRef(quizScreen);
-  const quizTieBreaksRef = useRef<Record<string, number>>({});
+  const quizTieBreaksRef = useRef<Record<string, number>>(playBoot?.tieBreaks ?? {});
   const quizReturnViewRef = useRef<"section" | "results">("section");
   const quizReturnPreviewRef = useRef(false);
   const exitQuizPlayRef = useRef<() => void>(() => {});
@@ -4642,7 +4653,7 @@ function CreateQuizEditor({
   const allVariables = quizScreen
     ? [...quizScreen.projectVariables, ...quizScreen.localVariables]
     : [...variables, ...localVariables];
-  const hideEditorChrome = resultsPreview || quizScreen !== null || publishOpen;
+  const hideEditorChrome = playOnly || resultsPreview || quizScreen !== null || publishOpen;
   const isResultsView = editorView === "results";
   const resultsLeftInset =
     isResultsView &&
@@ -4916,6 +4927,10 @@ function CreateQuizEditor({
   }
 
   function exitQuizPlay() {
+    if (playOnly) {
+      onExitPlay?.();
+      return;
+    }
     if (!quizScreenRef.current) return;
     setQuizScreen(null);
     setQuizGraph(null);
@@ -5080,14 +5095,16 @@ function CreateQuizEditor({
   }
 
   useEffect(() => {
+    if (playOnly) return;
     const persistDelay = getToken() ? 500 : 200;
     const timeoutId = window.setTimeout(() => {
       persistQuiz(getPersistedQuiz());
     }, persistDelay);
     return () => window.clearTimeout(timeoutId);
-  }, [projectName, sectionName, sections, activeSectionId, boxes, variables, localVariables, defaultAnswers, localDefaultAnswers, transitions, camera, results, listing]);
+  }, [playOnly, projectName, sectionName, sections, activeSectionId, boxes, variables, localVariables, defaultAnswers, localDefaultAnswers, transitions, camera, results, listing]);
 
   useEffect(() => {
+    if (playOnly) return;
     if (searchParams.get("publish") !== "1") return;
     setPublishOpen(true);
     const nextParams = new URLSearchParams(searchParams);
@@ -5096,6 +5113,7 @@ function CreateQuizEditor({
   }, [searchParams, setSearchParams]);
 
   useEffect(() => {
+    if (playOnly) return;
     const flush = () => persistQuiz(getPersistedQuiz(), { keepalive: true });
     window.addEventListener("beforeunload", flush);
     window.addEventListener("pagehide", flush);
