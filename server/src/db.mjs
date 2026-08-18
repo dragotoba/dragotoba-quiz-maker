@@ -15,9 +15,23 @@ export function getDatabaseUrl() {
 }
 
 export function createPool() {
+  const connectionString = getDatabaseUrl();
+  const sslDisabled = process.env.PGSSLMODE === "disable";
+  console.log("[auth] creating db pool", {
+    sslDisabled,
+    hasDatabaseUrl: true,
+    connectionTimeoutMs: 10000,
+  });
   const pool = new pg.Pool({
-    connectionString: getDatabaseUrl(),
-    ssl: process.env.PGSSLMODE === "disable" ? false : { rejectUnauthorized: false },
+    connectionString,
+    ssl: sslDisabled ? false : { rejectUnauthorized: false },
+    connectionTimeoutMillis: 10_000,
+    idleTimeoutMillis: 30_000,
+  });
+  pool.on("error", (error) => {
+    console.error("[auth] db pool error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   });
   return pool;
 }
@@ -37,7 +51,9 @@ async function listMigrationFiles() {
 }
 
 export async function runMigrations(pool = createPool()) {
+  console.log("[auth] connecting to database for migrations");
   const client = await pool.connect();
+  console.log("[auth] database connection acquired");
   try {
     await ensureMigrationsTable(client);
     const files = await listMigrationFiles();

@@ -14,18 +14,62 @@ import {
   getJwtSecret,
 } from "./auth.mjs";
 
-const HOST = "0.0.0.0";
+console.log("[auth] starting process", {
+  nodeEnv: process.env.NODE_ENV ?? null,
+  portEnv: process.env.PORT ?? null,
+});
+
 const PORT = Number(process.env.PORT) || 3001;
 
-const pool = createPool();
-getJwtSecret();
+try {
+  getJwtSecret();
+  console.log("[auth] jwt secret ok");
+} catch (error) {
+  console.error("[auth] fatal: JWT_SECRET is required in production", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+  process.exit(1);
+}
 
-await runMigrations(pool);
+let pool;
+try {
+  pool = createPool();
+  console.log("[auth] running migrations");
+  await runMigrations(pool);
+  console.log("[auth] migrations finished");
+} catch (error) {
+  console.error("[auth] fatal: database startup failed", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+  process.exit(1);
+}
 
 const app = express();
 const corsOrigin = process.env.CORS_ORIGIN?.trim();
 app.use(cors({ origin: corsOrigin || true }));
 app.use(express.json({ limit: "32kb" }));
+
+app.use((req, res, next) => {
+  authLog("incoming", { method: req.method, path: req.path });
+  // #region agent log
+  fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Debug-Session-Id": "a58a7b",
+    },
+    body: JSON.stringify({
+      sessionId: "a58a7b",
+      hypothesisId: "D",
+      location: "server/src/index.mjs:incoming",
+      message: "incoming request",
+      data: { method: req.method, path: req.path },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+  next();
+});
 
 app.get("/health", async (_req, res) => {
   try {
@@ -201,8 +245,16 @@ app.get("/api/auth/me", async (req, res) => {
   }
 });
 
-app.listen(PORT, HOST, () => {
-  console.log(`API server listening on http://${HOST}:${PORT}`);
+const server = app.listen(PORT, () => {
+  const addr = server.address();
+  authLog("listening", {
+    port: PORT,
+    envPort: process.env.PORT ?? null,
+    address: addr,
+  });
+  console.log(
+    `API server listening on port ${PORT} (PORT env=${process.env.PORT ?? "unset"}). Railway public domain target port must match this.`,
+  );
 });
 
 process.on("SIGTERM", async () => {
