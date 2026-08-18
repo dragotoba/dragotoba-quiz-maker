@@ -111,7 +111,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const urlPath = req.url || "/";
   let filePath = safeJoin(DIST, urlPath === "/" ? "/index.html" : urlPath);
   if (!filePath) {
     send(res, 400, "Bad Request");
