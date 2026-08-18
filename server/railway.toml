@@ -2,4 +2,6 @@
 buildCommand = "npm install"
 
 [deploy]
-startCommand = "npm run migrate && npm start"
+startCommand = "npm start"
+healthcheckPath = "/health"
+healthcheckTimeout = 60

@@ -9,5 +9,4 @@ COPY migrations ./migrations
 COPY src ./src
 
 USER node
-EXPOSE 3001
-CMD ["sh", "-c", "npm run migrate && npm start"]
+CMD ["npm", "start"]

@@ -1,2 +1,0 @@
-{"sessionId":"a58a7b","hypothesisId":"E","location":"app/src/lib/auth.ts:authRequest","message":"client request start","data":{"url":"/api/auth/signup"},"timestamp":1787013669197}
-{"sessionId":"a58a7b","hypothesisId":"E","location":"app/src/lib/auth.ts:authRequest","message":"client response","data":{"url":"/api/auth/signup","status":502,"json":false,"error":null,"preview":"<!DOCTYPE html>\n<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <!"},"timestamp":1787013684541}
