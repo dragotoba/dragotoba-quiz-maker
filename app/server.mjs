@@ -31,6 +31,42 @@ function send(res, status, body, headers = {}) {
   res.end(body);
 }
 
+async function proxyApi(req, res) {
+  const base = process.env.API_URL?.replace(/\/$/, "");
+  if (!base) {
+    send(res, 502, "API_URL is not set");
+    return;
+  }
+
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const body = Buffer.concat(chunks);
+
+  const headers = {};
+  const contentType = req.headers["content-type"];
+  const authorization = req.headers.authorization;
+  if (contentType) headers["content-type"] = contentType;
+  if (authorization) headers.authorization = authorization;
+
+  try {
+    const target = new URL(req.url || "/api", `${base}/`);
+    const upstream = await fetch(target, {
+      method: req.method,
+      headers,
+      body: req.method === "GET" || req.method === "HEAD" ? undefined : body,
+    });
+    const responseBody = Buffer.from(await upstream.arrayBuffer());
+    const responseHeaders = {
+      "Content-Type":
+        upstream.headers.get("content-type") || "application/json; charset=utf-8",
+    };
+    res.writeHead(upstream.status, responseHeaders);
+    res.end(responseBody);
+  } catch {
+    send(res, 502, "Bad Gateway");
+  }
+}
+
 function safeJoin(root, requestPath) {
   const decoded = decodeURIComponent(requestPath.split("?")[0] || "/");
   const normalized = path.normalize(decoded).replace(/^(\.\.[/\\])+/, "");
@@ -64,6 +100,12 @@ function serveFile(res, filePath) {
 }
 
 const server = http.createServer((req, res) => {
+  const urlPath = req.url || "/";
+  if (urlPath === "/api" || urlPath.startsWith("/api/")) {
+    proxyApi(req, res);
+    return;
+  }
+
   if (req.method !== "GET" && req.method !== "HEAD") {
     send(res, 405, "Method Not Allowed");
     return;
