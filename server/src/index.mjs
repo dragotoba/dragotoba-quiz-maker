@@ -47,8 +47,36 @@ app.get("/", (_req, res) => {
   });
 });
 
+function authLog(message, data = {}) {
+  console.log(`[auth] ${message}`, data);
+}
+
 app.post("/api/auth/signup", async (req, res) => {
+  const started = Date.now();
   const parsed = validateSignup(req.body ?? {});
+  authLog("signup request", {
+    ok: parsed.ok,
+    usernameLen: parsed.username.length,
+    emailLen: parsed.email.length,
+    errors: parsed.ok ? [] : parsed.errors,
+  });
+  // #region agent log
+  fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Debug-Session-Id": "a58a7b",
+    },
+    body: JSON.stringify({
+      sessionId: "a58a7b",
+      hypothesisId: "D",
+      location: "server/src/index.mjs:signup",
+      message: "signup received",
+      data: { ok: parsed.ok, errors: parsed.ok ? [] : parsed.errors },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
   if (!parsed.ok) {
     res.status(400).json({ error: parsed.errors[0], errors: parsed.errors });
     return;
@@ -63,13 +91,33 @@ app.post("/api/auth/signup", async (req, res) => {
       [parsed.username, parsed.email, passwordHash],
     );
     const user = publicUser(result.rows[0]);
+    const token = signToken(user.id);
+    authLog("signup success", { userId: user.id, ms: Date.now() - started });
+    // #region agent log
+    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "a58a7b",
+      },
+      body: JSON.stringify({
+        sessionId: "a58a7b",
+        hypothesisId: "D",
+        location: "server/src/index.mjs:signup",
+        message: "signup success",
+        data: { userId: user.id, ms: Date.now() - started },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     res.status(201).json({
-      token: signToken(user.id),
+      token,
       user,
     });
   } catch (error) {
     if (error?.code === "23505") {
       const field = uniqueFieldFromError(error);
+      authLog("signup conflict", { field, ms: Date.now() - started });
       res.status(409).json({
         error:
           field === "email"
@@ -78,6 +126,11 @@ app.post("/api/auth/signup", async (req, res) => {
       });
       return;
     }
+    authLog("signup failed", {
+      code: error?.code ?? null,
+      error: error instanceof Error ? error.message : String(error),
+      ms: Date.now() - started,
+    });
     console.error("Signup failed:", error);
     res.status(500).json({ error: "Could not create account." });
   }

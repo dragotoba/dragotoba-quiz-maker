@@ -31,9 +31,50 @@ function send(res, status, body, headers = {}) {
   res.end(body);
 }
 
+function proxyLog(message, data = {}) {
+  console.log(`[proxy] ${message}`, data);
+}
+
 async function proxyApi(req, res) {
+  const started = Date.now();
+  const reqUrl = req.url || "/api";
   const base = process.env.API_URL?.replace(/\/$/, "");
+  let targetHref = null;
+  try {
+    targetHref = base ? new URL(reqUrl, `${base}/`).href : null;
+  } catch (error) {
+    targetHref = null;
+    proxyLog("invalid API_URL or request path", {
+      reqUrl,
+      hasApiUrl: Boolean(base),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  // #region agent log
+  fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Debug-Session-Id": "a58a7b",
+    },
+    body: JSON.stringify({
+      sessionId: "a58a7b",
+      hypothesisId: "A",
+      location: "app/server.mjs:proxyApi",
+      message: "proxy start",
+      data: {
+        method: req.method,
+        reqUrl,
+        hasApiUrl: Boolean(base),
+        apiHost: base ? (() => { try { return new URL(base).host; } catch { return "invalid"; } })() : null,
+        targetHref,
+      },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
   if (!base) {
+    proxyLog("API_URL is not set", { method: req.method, reqUrl });
     send(res, 502, "API_URL is not set");
     return;
   }
@@ -49,7 +90,13 @@ async function proxyApi(req, res) {
   if (authorization) headers.authorization = authorization;
 
   try {
-    const target = new URL(req.url || "/api", `${base}/`);
+    const target = new URL(reqUrl, `${base}/`);
+    proxyLog("forwarding", {
+      method: req.method,
+      reqUrl,
+      target: target.href,
+      bodyBytes: body.length,
+    });
     const upstream = await fetch(target, {
       method: req.method,
       headers,
@@ -60,9 +107,58 @@ async function proxyApi(req, res) {
       "Content-Type":
         upstream.headers.get("content-type") || "application/json; charset=utf-8",
     };
+    proxyLog("upstream response", {
+      method: req.method,
+      target: target.href,
+      status: upstream.status,
+      contentType: responseHeaders["Content-Type"],
+      ms: Date.now() - started,
+    });
+    // #region agent log
+    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "a58a7b",
+      },
+      body: JSON.stringify({
+        sessionId: "a58a7b",
+        hypothesisId: "B",
+        location: "app/server.mjs:proxyApi",
+        message: "proxy upstream ok",
+        data: { status: upstream.status, target: target.href, ms: Date.now() - started },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     res.writeHead(upstream.status, responseHeaders);
     res.end(responseBody);
-  } catch {
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    proxyLog("upstream fetch failed", {
+      method: req.method,
+      reqUrl,
+      target: targetHref,
+      ms: Date.now() - started,
+      error: errMsg,
+    });
+    // #region agent log
+    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "a58a7b",
+      },
+      body: JSON.stringify({
+        sessionId: "a58a7b",
+        hypothesisId: "B",
+        location: "app/server.mjs:proxyApi",
+        message: "proxy upstream failed",
+        data: { reqUrl, targetHref, ms: Date.now() - started, error: errMsg },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     send(res, 502, "Bad Gateway");
   }
 }
