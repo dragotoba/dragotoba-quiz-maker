@@ -71,6 +71,16 @@ function asDocument(raw) {
     sections,
     activeSectionId,
     results: data.results ?? { textBoxes: [] },
+    listing:
+      data.listing && typeof data.listing === "object" && !Array.isArray(data.listing)
+        ? {
+            description:
+              typeof data.listing.description === "string" ? data.listing.description : "",
+            coverImage:
+              typeof data.listing.coverImage === "string" ? data.listing.coverImage : "",
+            unlisted: data.listing.unlisted === true,
+          }
+        : { description: "", coverImage: "", unlisted: false },
   };
 }
 

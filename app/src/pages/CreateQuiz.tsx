@@ -10,10 +10,13 @@ import {
 } from "@/lib/quizEngine";
 import {
   DEFAULT_PROJECT_NAME,
+  emptyListing,
   emptySection,
   getStoredQuiz,
   nextSectionName,
+  normalizeListing,
   saveStoredQuiz,
+  type QuizListing,
   type StoredQuizDocument,
 } from "@/lib/quizStorage";
 import { getToken } from "@/lib/auth";
@@ -2290,6 +2293,116 @@ function AxisImagePicker({
   );
 }
 
+function CoverImageField({
+  value,
+  onCheckpoint,
+  onChange,
+}: {
+  value: string;
+  onCheckpoint: () => void;
+  onChange: (dataUrl: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dragDepthRef = useRef(0);
+  const [dragOver, setDragOver] = useState(false);
+
+  function commitFile(file: File | null) {
+    if (!file || !file.type.startsWith("image/")) return;
+    onCheckpoint();
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      if (result) onChange(result);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  return (
+    <div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        aria-label="Browse front image"
+        onChange={(e) => {
+          const file = firstImageFile(e.target.files);
+          e.target.value = "";
+          commitFile(file);
+        }}
+      />
+      <div
+        className={`relative flex min-h-44 w-full items-center justify-center overflow-hidden rounded-xl border-2 border-dashed transition-colors ${
+          dragOver
+            ? "border-[#2f5d76] bg-[#2f5d76]/10"
+            : "border-black/20 bg-[#fafafa]"
+        }`}
+        onDragEnter={(e) => {
+          e.preventDefault();
+          dragDepthRef.current += 1;
+          setDragOver(true);
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={() => {
+          dragDepthRef.current -= 1;
+          if (dragDepthRef.current <= 0) {
+            dragDepthRef.current = 0;
+            setDragOver(false);
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          dragDepthRef.current = 0;
+          setDragOver(false);
+          commitFile(firstImageFile(e.dataTransfer.files));
+        }}
+      >
+        {value ? (
+          <img
+            src={value}
+            alt=""
+            draggable={false}
+            className="h-48 w-full object-cover"
+          />
+        ) : (
+          <div className="px-4 py-8 text-center">
+            <p className="text-sm font-medium text-black">
+              {dragOver ? "Drop image" : "Front image"}
+            </p>
+            <p className="mt-1 text-xs text-black/50">
+              Drop an image, or choose a file
+            </p>
+          </div>
+        )}
+      </div>
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          className="cursor-pointer rounded-lg border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black hover:bg-black/5"
+        >
+          {value ? "Change image" : "Choose image"}
+        </button>
+        {value ? (
+          <button
+            type="button"
+            onClick={() => {
+              onCheckpoint();
+              onChange("");
+            }}
+            className="cursor-pointer rounded-lg px-3 py-2 text-sm font-medium text-black/60 hover:bg-black/5 hover:text-black"
+          >
+            Clear
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function AxisSideImage({
   side,
   src,
@@ -3508,6 +3621,7 @@ type EditorSnapshot = {
   sections: QuizSection[];
   activeSectionId: string;
   results: ResultsDocument;
+  listing: QuizListing;
   editorView: "section" | "results";
   selectedId: string | null;
   selectedTransitionId: string | null;
@@ -3530,6 +3644,7 @@ type PersistedQuiz = {
   sections: QuizSection[];
   activeSectionId: string;
   results: ResultsDocument;
+  listing: QuizListing;
 };
 
 function normalizeCanvasBox(raw: unknown): CanvasBox | null {
@@ -4206,6 +4321,7 @@ function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
     sections,
     activeSectionId,
     results: normalizeResults(doc.results),
+    listing: normalizeListing(doc.listing),
   };
 }
 
@@ -4221,6 +4337,7 @@ function persistQuiz(quiz: PersistedQuiz, options?: { keepalive?: boolean }) {
       sections: quiz.sections,
       activeSectionId: quiz.activeSectionId,
       results: quiz.results,
+      listing: quiz.listing,
     },
     options,
   );
@@ -4340,6 +4457,9 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
     string | null
   >(null);
   const [resultsPreview, setResultsPreview] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [listing, setListing] = useState<QuizListing>(initialQuiz.listing);
+  const [listingSaved, setListingSaved] = useState(false);
   const [quizScreen, setQuizScreen] = useState<QuizPlayScreen | null>(null);
   const [quizGraph, setQuizGraph] = useState<QuizSection[] | null>(null);
   const [quizHistory, setQuizHistory] = useState<
@@ -4392,6 +4512,8 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
   const selectedResultsBarIdRef = useRef(selectedResultsBarId);
   const selectedResultsImageIdRef = useRef(selectedResultsImageId);
   const resultsPreviewRef = useRef(resultsPreview);
+  const publishOpenRef = useRef(publishOpen);
+  const listingRef = useRef(listing);
   const quizScreenRef = useRef(quizScreen);
   const quizTieBreaksRef = useRef<Record<string, number>>({});
   const quizReturnViewRef = useRef<"section" | "results">("section");
@@ -4422,6 +4544,8 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
   selectedResultsBarIdRef.current = selectedResultsBarId;
   selectedResultsImageIdRef.current = selectedResultsImageId;
   resultsPreviewRef.current = resultsPreview;
+  publishOpenRef.current = publishOpen;
+  listingRef.current = listing;
   quizScreenRef.current = quizScreen;
   axisLabelHeightRef.current = axisLabelHeights;
   resultsRef.current = results;
@@ -4498,7 +4622,7 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
   const allVariables = quizScreen
     ? [...quizScreen.projectVariables, ...quizScreen.localVariables]
     : [...variables, ...localVariables];
-  const hideEditorChrome = resultsPreview || quizScreen !== null;
+  const hideEditorChrome = resultsPreview || quizScreen !== null || publishOpen;
   const isResultsView = editorView === "results";
   const resultsLeftInset =
     isResultsView &&
@@ -4618,6 +4742,7 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
       sections: mergedSections,
       activeSectionId: activeSectionIdRef.current,
       results: resultsRef.current,
+      listing: listingRef.current,
     };
   }
 
@@ -4629,6 +4754,7 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
       sections: getSectionsWithActive(),
       activeSectionId: activeSectionIdRef.current,
       results: resultsRef.current,
+      listing: listingRef.current,
       editorView: editorViewRef.current,
       selectedId: selectedIdRef.current,
       selectedTransitionId: selectedTransitionIdRef.current,
@@ -4651,6 +4777,7 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
     sectionsRef.current = next.sections;
     activeSectionIdRef.current = active.id;
     resultsRef.current = next.results;
+    listingRef.current = next.listing ?? emptyListing();
     editorViewRef.current = next.editorView;
     selectedIdRef.current = next.selectedId;
     selectedTransitionIdRef.current = next.selectedTransitionId;
@@ -4665,6 +4792,7 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
     setSections(next.sections);
     setActiveSectionId(active.id);
     setResults(next.results);
+    setListing(next.listing ?? emptyListing());
     setEditorView(next.editorView);
     if (next.editorView === "results") {
       setSettingsPane("project");
@@ -4937,7 +5065,7 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
       persistQuiz(getPersistedQuiz());
     }, persistDelay);
     return () => window.clearTimeout(timeoutId);
-  }, [projectName, sectionName, sections, activeSectionId, boxes, variables, localVariables, defaultAnswers, localDefaultAnswers, transitions, camera, results]);
+  }, [projectName, sectionName, sections, activeSectionId, boxes, variables, localVariables, defaultAnswers, localDefaultAnswers, transitions, camera, results, listing]);
 
   useEffect(() => {
     const flush = () => persistQuiz(getPersistedQuiz(), { keepalive: true });
@@ -5034,6 +5162,11 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
           exitQuizPlayRef.current();
           return;
         }
+        if (publishOpenRef.current) {
+          e.preventDefault();
+          setPublishOpen(false);
+          return;
+        }
         if (resultsPreviewRef.current) {
           e.preventDefault();
           setResultsPreview(false);
@@ -5048,6 +5181,7 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
       if (quizScreenRef.current) return;
+      if (publishOpenRef.current) return;
 
       const key = e.key.toLowerCase();
       if (key === "z" && !e.shiftKey) {
@@ -6450,7 +6584,11 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
         y: menu.worldY,
         kind: "question",
         question: "",
-        answers: cloneAnswersWithNewIds(localDefaultAnswersRef.current),
+        answers: cloneAnswersWithNewIds(
+          localDefaultAnswersRef.current.length > 0
+            ? localDefaultAnswersRef.current
+            : defaultAnswersRef.current,
+        ),
       },
     ]);
     setSelectedId(id);
@@ -7332,6 +7470,11 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
     Boolean(quizQuestionBox) &&
     (quizAnswers.length === 0 || quizSelectedAnswerId !== null);
   const quizCanGoBack = quizHistory.length > 0;
+
+  function savePublishListing() {
+    persistQuiz(getPersistedQuiz());
+    setListingSaved(true);
+  }
 
   return (
     <div className="relative h-screen w-full overflow-hidden bg-white">
@@ -9473,18 +9616,112 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
         </aside>
       )}
 
-      {(resultsPreview || quizScreen) && (
+      {(resultsPreview || quizScreen || publishOpen) && (
         <button
           type="button"
-          aria-label={quizScreen ? "Exit quiz" : "Exit preview"}
+          aria-label={
+            quizScreen ? "Exit quiz" : publishOpen ? "Back to editor" : "Exit preview"
+          }
           onClick={() => {
             if (quizScreen) exitQuizPlay();
+            else if (publishOpen) setPublishOpen(false);
             else exitResultsPreview();
           }}
-          className="absolute top-4 right-4 z-[70] cursor-pointer rounded-md border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black shadow-sm hover:bg-[#f5f5f5]"
+          className="absolute top-4 right-4 z-[90] cursor-pointer rounded-md border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black shadow-sm hover:bg-[#f5f5f5]"
         >
-          {quizScreen ? "Exit" : "Exit Preview"}
+          {quizScreen ? "Exit" : publishOpen ? "Back" : "Exit Preview"}
         </button>
+      )}
+
+      {publishOpen && (
+        <div className="qh-page absolute inset-0 z-[80] overflow-y-auto bg-[#f4f1ea] px-6 py-16 font-[Poppins,sans-serif]">
+          <div className="mx-auto w-full max-w-lg rounded-2xl border border-[#1c2a33]/10 bg-white/90 p-8 shadow-[0_8px_32px_rgba(0,0,0,0.08)]">
+            <h1 className="text-2xl font-bold tracking-[-0.02em] text-[#1c2a33]">
+              Publish quiz
+            </h1>
+            <p className="mt-2 text-sm leading-relaxed text-[#4a5560]">
+              Confirm how this quiz should appear. Saving keeps these details with the quiz.
+            </p>
+
+            <label className="mt-6 block text-sm text-[#1c2a33]">
+              <span className="font-medium text-[#4a5560]">Name</span>
+              <input
+                type="text"
+                value={projectName}
+                aria-label="Quiz name"
+                onChange={(e) => {
+                  setListingSaved(false);
+                  setProjectName(e.target.value);
+                }}
+                placeholder={DEFAULT_PROJECT_NAME}
+                className="mt-1.5 w-full rounded-lg border border-[#1c2a33]/15 bg-white px-3 py-2.5 text-sm text-[#1c2a33] outline-none focus:border-[#2f5d76]"
+              />
+            </label>
+
+            <label className="mt-4 block text-sm text-[#1c2a33]">
+              <span className="font-medium text-[#4a5560]">Description</span>
+              <textarea
+                value={listing.description}
+                aria-label="Quiz description"
+                rows={4}
+                onChange={(e) => {
+                  setListingSaved(false);
+                  setListing((prev) => ({ ...prev, description: e.target.value }));
+                }}
+                placeholder="Tell people what this quiz is about"
+                className="mt-1.5 w-full resize-y rounded-lg border border-[#1c2a33]/15 bg-white px-3 py-2.5 text-sm text-[#1c2a33] outline-none focus:border-[#2f5d76]"
+              />
+            </label>
+
+            <div className="mt-4 text-sm text-[#1c2a33]">
+              <span className="font-medium text-[#4a5560]">Front image</span>
+              <div className="mt-1.5">
+                <CoverImageField
+                  value={listing.coverImage}
+                  onCheckpoint={() => setListingSaved(false)}
+                  onChange={(coverImage) =>
+                    setListing((prev) => ({ ...prev, coverImage }))
+                  }
+                />
+              </div>
+            </div>
+
+            <label className="mt-5 flex cursor-pointer items-center gap-2 text-sm text-[#1c2a33]">
+              <input
+                type="checkbox"
+                checked={listing.unlisted}
+                aria-label="Unlisted"
+                onChange={(e) => {
+                  setListingSaved(false);
+                  setListing((prev) => ({ ...prev, unlisted: e.target.checked }));
+                }}
+                className="h-4 w-4 cursor-pointer"
+              />
+              Unlisted
+            </label>
+            <p className="mt-1 pl-6 text-xs text-[#5c6770]">
+              Unlisted quizzes won&apos;t appear in public lists.
+            </p>
+
+            <div className="mt-8 flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={savePublishListing}
+                className="w-full cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e]"
+              >
+                {listingSaved ? "Saved" : "Save"}
+              </button>
+              <button
+                type="button"
+                disabled
+                aria-disabled="true"
+                className="w-full cursor-not-allowed rounded-full border-none bg-black/15 px-6 py-3 text-sm font-semibold text-black/40"
+              >
+                Publish
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {!hideEditorChrome && (
@@ -9706,6 +9943,16 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
                     className="w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-[#2f5d76] px-3 py-2 text-sm font-medium text-white hover:bg-[#244a5e]"
                   >
                     Preview Quiz
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setListingSaved(false);
+                      setPublishOpen(true);
+                    }}
+                    className="mt-3 w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-white px-3 py-2 text-sm font-medium text-[#2f5d76] hover:bg-[#2f5d76]/5"
+                  >
+                    Publish
                   </button>
                 </section>
               </>
