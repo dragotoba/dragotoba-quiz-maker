@@ -1,3 +1,5 @@
+import { readBearerToken, userIdFromToken } from "./auth.mjs";
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -110,7 +112,13 @@ function rowToCommunity(row) {
     likes: Number(row.like_count) || 0,
     publishedAt: Number(row.published_at_ms),
     author: row.username ?? "",
+    liked: Boolean(row.liked),
   };
+}
+
+function requestUserId(req) {
+  const token = readBearerToken(req);
+  return token ? userIdFromToken(token) : null;
 }
 
 const COMMUNITY_SORTS = new Set(["trending", "liked", "recent"]);
@@ -355,15 +363,21 @@ export function registerQuizRoutes(app, pool, requireUser) {
 
   app.get("/api/community/quizzes", async (req, res) => {
     const sort = COMMUNITY_SORTS.has(req.query?.sort) ? req.query.sort : "trending";
+    const userId = requestUserId(req);
     try {
       const result = await pool.query(
         `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, u.username,
-                (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms
+                (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms,
+                EXISTS(
+                  SELECT 1 FROM published_quiz_likes l
+                  WHERE l.quiz_id = p.id AND l.user_id = $1
+                ) AS liked
          FROM published_quizzes p
          JOIN users u ON u.id = p.user_id
          WHERE NOT p.unlisted
          ORDER BY ${communityOrderBy(sort)}
          LIMIT 100`,
+        [userId],
       );
       res.json({ quizzes: result.rows.map(rowToCommunity) });
     } catch (error) {
@@ -372,14 +386,14 @@ export function registerQuizRoutes(app, pool, requireUser) {
     }
   });
 
-  app.get("/api/community/quizzes/:id", async (req, res) => {
+  app.get("/api/community/quizzes/:id/document", async (req, res) => {
     if (!isUuid(req.params.id)) {
       res.status(400).json({ error: "Invalid quiz id." });
       return;
     }
     try {
       const result = await pool.query(
-        `SELECT document FROM published_quizzes WHERE id = $1 AND NOT unlisted`,
+        `SELECT document FROM published_quizzes WHERE id = $1`,
         [req.params.id],
       );
       const row = result.rows[0];
@@ -391,6 +405,102 @@ export function registerQuizRoutes(app, pool, requireUser) {
     } catch (error) {
       console.error("Load community quiz failed:", error);
       res.status(500).json({ error: "Could not load quiz." });
+    }
+  });
+
+  app.get("/api/community/quizzes/:id", async (req, res) => {
+    if (!isUuid(req.params.id)) {
+      res.status(400).json({ error: "Invalid quiz id." });
+      return;
+    }
+    const userId = requestUserId(req);
+    try {
+      const result = await pool.query(
+        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, u.username,
+                (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms,
+                EXISTS(
+                  SELECT 1 FROM published_quiz_likes l
+                  WHERE l.quiz_id = p.id AND l.user_id = $2
+                ) AS liked
+         FROM published_quizzes p
+         JOIN users u ON u.id = p.user_id
+         WHERE p.id = $1`,
+        [req.params.id, userId],
+      );
+      const row = result.rows[0];
+      if (!row) {
+        res.status(404).json({ error: "Quiz not found." });
+        return;
+      }
+      res.json({ quiz: rowToCommunity(row) });
+    } catch (error) {
+      console.error("Load community listing failed:", error);
+      res.status(500).json({ error: "Could not load quiz." });
+    }
+  });
+
+  app.post("/api/community/quizzes/:id/like", requireUser, async (req, res) => {
+    if (!isUuid(req.params.id)) {
+      res.status(400).json({ error: "Invalid quiz id." });
+      return;
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const published = await client.query(
+        `SELECT id FROM published_quizzes WHERE id = $1 FOR UPDATE`,
+        [req.params.id],
+      );
+      if (published.rowCount === 0) {
+        await client.query("ROLLBACK");
+        res.status(404).json({ error: "Quiz not found." });
+        return;
+      }
+
+      const existing = await client.query(
+        `SELECT 1 FROM published_quiz_likes WHERE quiz_id = $1 AND user_id = $2`,
+        [req.params.id, req.userId],
+      );
+      let liked;
+      if (existing.rowCount > 0) {
+        await client.query(
+          `DELETE FROM published_quiz_likes WHERE quiz_id = $1 AND user_id = $2`,
+          [req.params.id, req.userId],
+        );
+        await client.query(
+          `UPDATE published_quizzes
+           SET like_count = GREATEST(like_count - 1, 0)
+           WHERE id = $1`,
+          [req.params.id],
+        );
+        liked = false;
+      } else {
+        await client.query(
+          `INSERT INTO published_quiz_likes (quiz_id, user_id) VALUES ($1, $2)`,
+          [req.params.id, req.userId],
+        );
+        await client.query(
+          `UPDATE published_quizzes SET like_count = like_count + 1 WHERE id = $1`,
+          [req.params.id],
+        );
+        liked = true;
+      }
+
+      const count = await client.query(
+        `SELECT like_count FROM published_quizzes WHERE id = $1`,
+        [req.params.id],
+      );
+      await client.query("COMMIT");
+      res.json({
+        liked,
+        likes: Number(count.rows[0]?.like_count) || 0,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      console.error("Toggle like failed:", error);
+      res.status(500).json({ error: "Could not update like." });
+    } finally {
+      client.release();
     }
   });
 }
