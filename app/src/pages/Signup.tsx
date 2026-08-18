@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
-import { getStoredUser, signupAccount } from "@/lib/auth";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { getStoredUser, safeNextPath, signupAccount } from "@/lib/auth";
 import { migrateLocalQuizzesIfNeeded } from "@/lib/quizStorage";
 
 export default function Signup() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const nextPath = safeNextPath(searchParams.get("next"));
   const existing = getStoredUser();
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -14,7 +16,7 @@ export default function Signup() {
   const [busy, setBusy] = useState(false);
 
   if (existing) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to={nextPath} replace />;
   }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -32,7 +34,7 @@ export default function Signup() {
       } catch {
         // Dashboard retries the upload if local quizzes remain.
       }
-      navigate("/dashboard", { replace: true });
+      navigate(nextPath, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create account.");
     } finally {
@@ -140,7 +142,11 @@ export default function Signup() {
           <p className="mt-6 text-center text-sm text-[#5c6770]">
             Already have an account?{" "}
             <Link
-              to="/login"
+              to={
+                nextPath === "/dashboard"
+                  ? "/login"
+                  : `/login?next=${encodeURIComponent(nextPath)}`
+              }
               className="font-semibold text-[#2f5d76] no-underline hover:text-[#244a5e]"
             >
               Log in

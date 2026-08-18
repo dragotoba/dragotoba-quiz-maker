@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Link, Navigate, useParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   findQuestionBox,
   startQuiz,
@@ -12,9 +12,10 @@ import {
   DEFAULT_PROJECT_NAME,
   emptyListing,
   emptySection,
-  getStoredQuiz,
+  loadStoredQuiz,
   nextSectionName,
   normalizeListing,
+  publishStoredQuiz,
   saveStoredQuiz,
   type QuizListing,
   type StoredQuizDocument,
@@ -4326,7 +4327,7 @@ function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
 }
 
 function persistQuiz(quiz: PersistedQuiz, options?: { keepalive?: boolean }) {
-  void saveStoredQuiz(
+  return saveStoredQuiz(
     {
       version: 1,
       id: quiz.id,
@@ -4352,6 +4353,7 @@ export default function CreateQuiz() {
   const [initialQuiz, setInitialQuiz] = useState<PersistedQuiz | null | undefined>(
     undefined,
   );
+  const [initiallyPublished, setInitiallyPublished] = useState(false);
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
@@ -4364,9 +4366,10 @@ export default function CreateQuiz() {
     setLoadError("");
     void (async () => {
       try {
-        const stored = await getStoredQuiz(quizId);
+        const stored = await loadStoredQuiz(quizId);
         if (cancelled) return;
-        setInitialQuiz(stored ? parseStoredQuiz(stored) : null);
+        setInitiallyPublished(Boolean(stored?.published));
+        setInitialQuiz(stored ? parseStoredQuiz(stored.quiz) : null);
       } catch (error) {
         if (cancelled) return;
         setLoadError(error instanceof Error ? error.message : "Could not load quiz.");
@@ -4410,10 +4413,24 @@ export default function CreateQuiz() {
     return <Navigate to="/dashboard" replace />;
   }
 
-  return <CreateQuizEditor key={initialQuiz.id} initialQuiz={initialQuiz} />;
+  return (
+    <CreateQuizEditor
+      key={initialQuiz.id}
+      initialQuiz={initialQuiz}
+      initiallyPublished={initiallyPublished}
+    />
+  );
 }
 
-function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
+function CreateQuizEditor({
+  initialQuiz,
+  initiallyPublished,
+}: {
+  initialQuiz: PersistedQuiz;
+  initiallyPublished: boolean;
+}) {
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const initialSection =
     initialQuiz.sections.find((s) => s.id === initialQuiz.activeSectionId) ??
     initialQuiz.sections[0];
@@ -4460,6 +4477,9 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
   const [publishOpen, setPublishOpen] = useState(false);
   const [listing, setListing] = useState<QuizListing>(initialQuiz.listing);
   const [listingSaved, setListingSaved] = useState(false);
+  const [published, setPublished] = useState(initiallyPublished);
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [publishError, setPublishError] = useState("");
   const [quizScreen, setQuizScreen] = useState<QuizPlayScreen | null>(null);
   const [quizGraph, setQuizGraph] = useState<QuizSection[] | null>(null);
   const [quizHistory, setQuizHistory] = useState<
@@ -5066,6 +5086,14 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
     }, persistDelay);
     return () => window.clearTimeout(timeoutId);
   }, [projectName, sectionName, sections, activeSectionId, boxes, variables, localVariables, defaultAnswers, localDefaultAnswers, transitions, camera, results, listing]);
+
+  useEffect(() => {
+    if (searchParams.get("publish") !== "1") return;
+    setPublishOpen(true);
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("publish");
+    setSearchParams(nextParams, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     const flush = () => persistQuiz(getPersistedQuiz(), { keepalive: true });
@@ -7476,6 +7504,28 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
     setListingSaved(true);
   }
 
+  async function handlePublish() {
+    const quiz = getPersistedQuiz();
+    if (!getToken()) {
+      await persistQuiz(quiz);
+      const next = `/quiz/${encodeURIComponent(quiz.id)}?publish=1`;
+      navigate(`/login?next=${encodeURIComponent(next)}`);
+      return;
+    }
+    setPublishBusy(true);
+    setPublishError("");
+    try {
+      await persistQuiz(quiz);
+      await publishStoredQuiz(quiz.id);
+      setPublished(true);
+      setListingSaved(true);
+    } catch (error) {
+      setPublishError(error instanceof Error ? error.message : "Could not publish quiz.");
+    } finally {
+      setPublishBusy(false);
+    }
+  }
+
   return (
     <div className="relative h-screen w-full overflow-hidden bg-white">
       <div
@@ -9640,7 +9690,8 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
               Publish quiz
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-[#4a5560]">
-              Confirm how this quiz should appear. Saving keeps these details with the quiz.
+              Confirm how this quiz should appear. Publishing copies the current quiz;
+              later edits stay private until you publish again.
             </p>
 
             <label className="mt-6 block text-sm text-[#1c2a33]">
@@ -9707,18 +9758,34 @@ function CreateQuizEditor({ initialQuiz }: { initialQuiz: PersistedQuiz }) {
               <button
                 type="button"
                 onClick={savePublishListing}
-                className="w-full cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e]"
+                className="w-full cursor-pointer rounded-full border border-[#2f5d76] bg-white px-6 py-3 text-sm font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/5"
               >
                 {listingSaved ? "Saved" : "Save"}
               </button>
+              {publishError ? (
+                <p className="text-sm font-medium text-[#7a3b3b]" role="alert">
+                  {publishError}
+                </p>
+              ) : null}
               <button
                 type="button"
-                disabled
-                aria-disabled="true"
-                className="w-full cursor-not-allowed rounded-full border-none bg-black/15 px-6 py-3 text-sm font-semibold text-black/40"
+                disabled={publishBusy}
+                onClick={() => void handlePublish()}
+                className="w-full cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Publish
+                {publishBusy
+                  ? "Publishing…"
+                  : published
+                    ? "Publish again"
+                    : "Publish"}
               </button>
+              {published && !publishBusy ? (
+                <p className="text-center text-xs text-[#5c6770]">
+                  {listing.unlisted
+                    ? "This quiz is published but unlisted."
+                    : "This quiz is live in Community Quizzes."}
+                </p>
+              ) : null}
             </div>
           </div>
         </div>

@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
-import { getStoredUser, loginAccount } from "@/lib/auth";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { getStoredUser, loginAccount, safeNextPath } from "@/lib/auth";
 import { migrateLocalQuizzesIfNeeded } from "@/lib/quizStorage";
 
 export default function Login() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const nextPath = safeNextPath(searchParams.get("next"));
   const existing = getStoredUser();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -12,7 +14,7 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
 
   if (existing) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to={nextPath} replace />;
   }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -26,7 +28,7 @@ export default function Login() {
       } catch {
         // Dashboard retries the upload if local quizzes remain.
       }
-      navigate("/dashboard", { replace: true });
+      navigate(nextPath, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not sign in.");
     } finally {
@@ -102,7 +104,11 @@ export default function Login() {
           <p className="mt-6 text-center text-sm text-[#5c6770]">
             Don&apos;t have an account?{" "}
             <Link
-              to="/signup"
+              to={
+                nextPath === "/dashboard"
+                  ? "/signup"
+                  : `/signup?next=${encodeURIComponent(nextPath)}`
+              }
               className="font-semibold text-[#2f5d76] no-underline hover:text-[#244a5e]"
             >
               Sign up
