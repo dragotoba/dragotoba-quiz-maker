@@ -44,37 +44,11 @@ export function clearSession() {
 }
 
 async function authRequest(path: string, body: unknown): Promise<AuthResponse> {
-  const url = `/api${path}`;
-  console.log("[auth-client] request", { url });
-  // #region agent log
-  fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+  const res = await fetch(`/api${path}`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "a58a7b",
-    },
-    body: JSON.stringify({
-      sessionId: "a58a7b",
-      hypothesisId: "E",
-      location: "app/src/lib/auth.ts:authRequest",
-      message: "client request start",
-      data: { url },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.log("[auth-client] network error", { url, message });
-    throw new Error(message || "Request failed.");
-  }
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
   const raw = await res.text();
   let data: (AuthResponse & { error?: string }) | null = null;
   try {
@@ -82,38 +56,8 @@ async function authRequest(path: string, body: unknown): Promise<AuthResponse> {
   } catch {
     data = null;
   }
-  console.log("[auth-client] response", {
-    url,
-    status: res.status,
-    json: Boolean(data),
-    error: data?.error ?? null,
-    preview: raw.slice(0, 80),
-  });
-  // #region agent log
-  fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "a58a7b",
-    },
-    body: JSON.stringify({
-      sessionId: "a58a7b",
-      hypothesisId: "E",
-      location: "app/src/lib/auth.ts:authRequest",
-      message: "client response",
-      data: {
-        url,
-        status: res.status,
-        json: Boolean(data),
-        error: data?.error ?? null,
-        preview: raw.slice(0, 80),
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
   if (!res.ok || !data?.token || !data.user) {
-    throw new Error(data?.error || raw || "Request failed.");
+    throw new Error(data?.error || "Request failed.");
   }
   return data;
 }

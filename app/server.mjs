@@ -43,126 +43,40 @@ function hostName(value) {
     .toLowerCase();
 }
 
-function proxyLog(message, data = {}) {
-  console.log(`[proxy] ${message}`, data);
-}
-
-function describeApiUrl(raw) {
-  const value = String(raw || "");
-  return {
-    empty: value.length === 0,
-    unresolvedTemplate: value.includes("${{") || /\$\{[^{]/.test(value),
-    startsWithHttp: /^https?:\/\//i.test(value),
-    preview: value.slice(0, 120),
-  };
-}
-
 function apiBase() {
   return process.env.API_URL?.trim().replace(/\/$/, "") || "";
 }
 
-{
-  const info = describeApiUrl(process.env.API_URL);
-  proxyLog("boot API_URL", info);
+function hasUnresolvedTemplate(value) {
+  return value.includes("${{") || /\$\{[^{]/.test(value);
 }
 
 async function proxyApi(req, res) {
-  const started = Date.now();
   const reqUrl = req.url || "/api";
   const base = apiBase();
-  const apiInfo = describeApiUrl(base);
-  let targetHref = null;
-  try {
-    targetHref = base ? new URL(reqUrl, `${base}/`).href : null;
-  } catch (error) {
-    targetHref = null;
-    proxyLog("invalid API_URL or request path", {
-      reqUrl,
-      ...apiInfo,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-  // #region agent log
-  fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "a58a7b",
-    },
-    body: JSON.stringify({
-      sessionId: "a58a7b",
-      hypothesisId: "A",
-      location: "app/server.mjs:proxyApi",
-      message: "proxy start",
-      data: {
-        method: req.method,
-        reqUrl,
-        hasApiUrl: Boolean(base),
-        apiHost: base ? (() => { try { return new URL(base).host; } catch { return "invalid"; } })() : null,
-        targetHref,
-        incomingHost: hostName(req.headers.host),
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-  if (apiInfo.unresolvedTemplate) {
-    proxyLog("API_URL still contains ${{ }} and was not interpolated", apiInfo);
-    sendJson(res, 502, {
-      error:
-        "API_URL is still a Railway template. Set it to http://<private-domain>:8080 using the server service's RAILWAY_PRIVATE_DOMAIN value.",
-    });
+  if (!base) {
+    sendJson(res, 502, { error: "API_URL is not set on the app service." });
     return;
   }
-
-  if (!base) {
-    proxyLog("API_URL is not set", { method: req.method, reqUrl });
-    sendJson(res, 502, { error: "API_URL is not set on the app service." });
+  if (hasUnresolvedTemplate(base)) {
+    sendJson(res, 502, {
+      error:
+        "API_URL is still a Railway template. Set it to the server's public or private URL.",
+    });
     return;
   }
 
   let target;
   try {
     target = new URL(reqUrl, `${base}/`);
-  } catch (error) {
-    proxyLog("could not build upstream URL", {
-      reqUrl,
-      ...apiInfo,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    sendJson(res, 502, {
-      error: apiInfo.unresolvedTemplate
-        ? "API_URL is still a Railway template. Paste the resolved private URL instead."
-        : "API_URL is invalid.",
-    });
+  } catch {
+    sendJson(res, 502, { error: "API_URL is invalid." });
     return;
   }
 
   const incomingHost = hostName(req.headers.host);
   const targetHost = hostName(target.host);
   if (incomingHost && targetHost === incomingHost) {
-    proxyLog("API_URL points at this website, not the API server", {
-      incomingHost,
-      targetHost,
-      target: target.href,
-    });
-    // #region agent log
-    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "a58a7b",
-      },
-      body: JSON.stringify({
-        sessionId: "a58a7b",
-        hypothesisId: "C",
-        location: "app/server.mjs:proxyApi",
-        message: "self-proxy blocked",
-        data: { incomingHost, targetHost, target: target.href },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     sendJson(res, 502, {
       error:
         "API_URL points at the website. Set it to the server service URL (not the app URL).",
@@ -181,88 +95,30 @@ async function proxyApi(req, res) {
   if (authorization) headers.authorization = authorization;
 
   try {
-    proxyLog("forwarding", {
-      method: req.method,
-      reqUrl,
-      target: target.href,
-      bodyBytes: body.length,
-    });
     const upstream = await fetch(target, {
       method: req.method,
       headers,
       body: req.method === "GET" || req.method === "HEAD" ? undefined : body,
     });
     const responseBody = Buffer.from(await upstream.arrayBuffer());
-    const responseHeaders = {
+    res.writeHead(upstream.status, {
       "Content-Type":
         upstream.headers.get("content-type") || "application/json; charset=utf-8",
-    };
-    proxyLog("upstream response", {
-      method: req.method,
-      target: target.href,
-      status: upstream.status,
-      contentType: responseHeaders["Content-Type"],
-      ms: Date.now() - started,
     });
-    // #region agent log
-    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "a58a7b",
-      },
-      body: JSON.stringify({
-        sessionId: "a58a7b",
-        hypothesisId: "B",
-        location: "app/server.mjs:proxyApi",
-        message: "proxy upstream ok",
-        data: { status: upstream.status, target: target.href, ms: Date.now() - started },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
-    res.writeHead(upstream.status, responseHeaders);
     res.end(responseBody);
   } catch (error) {
-    const errMsg = error instanceof Error ? error.message : String(error);
     const cause = error instanceof Error ? error.cause : null;
-    const causeInfo =
-      cause && typeof cause === "object"
-        ? {
-            message: cause instanceof Error ? cause.message : String(cause),
-            code: "code" in cause ? cause.code : null,
-            errno: "errno" in cause ? cause.errno : null,
-          }
-        : null;
-    proxyLog("upstream fetch failed", {
-      method: req.method,
-      reqUrl,
-      target: targetHref,
-      ms: Date.now() - started,
-      error: errMsg,
-      cause: causeInfo,
+    const code =
+      cause && typeof cause === "object" && "code" in cause ? cause.code : null;
+    console.error("[proxy] upstream fetch failed", {
+      target: target.href,
+      error: error instanceof Error ? error.message : String(error),
+      code,
     });
-    // #region agent log
-    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "a58a7b",
-      },
-      body: JSON.stringify({
-        sessionId: "a58a7b",
-        hypothesisId: "B",
-        location: "app/server.mjs:proxyApi",
-        message: "proxy upstream failed",
-        data: { reqUrl, targetHref, ms: Date.now() - started, error: errMsg, cause: causeInfo },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     sendJson(res, 502, {
       error:
-        causeInfo?.code === "ENOTFOUND"
-          ? "Could not DNS-resolve API_URL. Copy RAILWAY_PRIVATE_DOMAIN from the server service Variables, or use the server's public https://….up.railway.app URL."
+        code === "ENOTFOUND"
+          ? "Could not DNS-resolve API_URL. Use the server's public https://….up.railway.app URL."
           : "Could not reach the API server.",
     });
   }

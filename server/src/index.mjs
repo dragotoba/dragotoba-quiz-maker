@@ -14,33 +14,21 @@ import {
   getJwtSecret,
 } from "./auth.mjs";
 
-console.log("[auth] starting process", {
-  nodeEnv: process.env.NODE_ENV ?? null,
-  portEnv: process.env.PORT ?? null,
-});
-
 const PORT = Number(process.env.PORT) || 3001;
 
 try {
   getJwtSecret();
-  console.log("[auth] jwt secret ok");
 } catch (error) {
-  console.error("[auth] fatal: JWT_SECRET is required in production", {
-    error: error instanceof Error ? error.message : String(error),
-  });
+  console.error("JWT_SECRET is required in production:", error);
   process.exit(1);
 }
 
 let pool;
 try {
   pool = createPool();
-  console.log("[auth] running migrations");
   await runMigrations(pool);
-  console.log("[auth] migrations finished");
 } catch (error) {
-  console.error("[auth] fatal: database startup failed", {
-    error: error instanceof Error ? error.message : String(error),
-  });
+  console.error("Database startup failed:", error);
   process.exit(1);
 }
 
@@ -48,28 +36,6 @@ const app = express();
 const corsOrigin = process.env.CORS_ORIGIN?.trim();
 app.use(cors({ origin: corsOrigin || true }));
 app.use(express.json({ limit: "32kb" }));
-
-app.use((req, res, next) => {
-  authLog("incoming", { method: req.method, path: req.path });
-  // #region agent log
-  fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "a58a7b",
-    },
-    body: JSON.stringify({
-      sessionId: "a58a7b",
-      hypothesisId: "D",
-      location: "server/src/index.mjs:incoming",
-      message: "incoming request",
-      data: { method: req.method, path: req.path },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-  next();
-});
 
 app.get("/health", async (_req, res) => {
   try {
@@ -91,36 +57,8 @@ app.get("/", (_req, res) => {
   });
 });
 
-function authLog(message, data = {}) {
-  console.log(`[auth] ${message}`, data);
-}
-
 app.post("/api/auth/signup", async (req, res) => {
-  const started = Date.now();
   const parsed = validateSignup(req.body ?? {});
-  authLog("signup request", {
-    ok: parsed.ok,
-    usernameLen: parsed.username.length,
-    emailLen: parsed.email.length,
-    errors: parsed.ok ? [] : parsed.errors,
-  });
-  // #region agent log
-  fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "a58a7b",
-    },
-    body: JSON.stringify({
-      sessionId: "a58a7b",
-      hypothesisId: "D",
-      location: "server/src/index.mjs:signup",
-      message: "signup received",
-      data: { ok: parsed.ok, errors: parsed.ok ? [] : parsed.errors },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
   if (!parsed.ok) {
     res.status(400).json({ error: parsed.errors[0], errors: parsed.errors });
     return;
@@ -135,33 +73,13 @@ app.post("/api/auth/signup", async (req, res) => {
       [parsed.username, parsed.email, passwordHash],
     );
     const user = publicUser(result.rows[0]);
-    const token = signToken(user.id);
-    authLog("signup success", { userId: user.id, ms: Date.now() - started });
-    // #region agent log
-    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "a58a7b",
-      },
-      body: JSON.stringify({
-        sessionId: "a58a7b",
-        hypothesisId: "D",
-        location: "server/src/index.mjs:signup",
-        message: "signup success",
-        data: { userId: user.id, ms: Date.now() - started },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     res.status(201).json({
-      token,
+      token: signToken(user.id),
       user,
     });
   } catch (error) {
     if (error?.code === "23505") {
       const field = uniqueFieldFromError(error);
-      authLog("signup conflict", { field, ms: Date.now() - started });
       res.status(409).json({
         error:
           field === "email"
@@ -170,11 +88,6 @@ app.post("/api/auth/signup", async (req, res) => {
       });
       return;
     }
-    authLog("signup failed", {
-      code: error?.code ?? null,
-      error: error instanceof Error ? error.message : String(error),
-      ms: Date.now() - started,
-    });
     console.error("Signup failed:", error);
     res.status(500).json({ error: "Could not create account." });
   }
@@ -245,16 +158,8 @@ app.get("/api/auth/me", async (req, res) => {
   }
 });
 
-const server = app.listen(PORT, "::", () => {
-  const addr = server.address();
-  authLog("listening", {
-    port: PORT,
-    envPort: process.env.PORT ?? null,
-    address: addr,
-  });
-  console.log(
-    `API server listening on [::]:${PORT} (PORT env=${process.env.PORT ?? "unset"}). Railway private networking requires IPv6 (::).`,
-  );
+app.listen(PORT, "::", () => {
+  console.log(`API server listening on [::]:${PORT}`);
 });
 
 process.on("SIGTERM", async () => {
