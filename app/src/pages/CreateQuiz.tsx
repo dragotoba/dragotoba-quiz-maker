@@ -1665,18 +1665,14 @@ function ConditionsEditor({
                       className="min-w-0 w-24 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
                     />
                   ) : (
-                    <input
-                      type="number"
+                    <DeferredNumberInput
                       step="any"
                       value={typeof condition.value === "number" ? condition.value : 0}
                       aria-label="Condition amount"
-                      onFocus={onCheckpoint}
-                      onChange={(e) => {
-                        const next = e.target.value === "" ? 0 : Number(e.target.value);
-                        onUpdateCondition(condition.id, {
-                          value: Number.isFinite(next) ? next : 0,
-                        });
-                      }}
+                      onCheckpoint={onCheckpoint}
+                      onChange={(next) =>
+                        onUpdateCondition(condition.id, { value: next })
+                      }
                       className="w-20 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
                     />
                   )}
@@ -1830,18 +1826,14 @@ function EffectsEditor({
                     className="min-w-0 w-24 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
                   />
                 ) : (
-                  <input
-                    type="number"
+                  <DeferredNumberInput
                     step="any"
                     value={typeof effect.value === "number" ? effect.value : 0}
                     aria-label="Effect amount"
-                    onFocus={onCheckpoint}
-                    onChange={(e) => {
-                      const next = e.target.value === "" ? 0 : Number(e.target.value);
-                      onUpdateEffect(effect.id, {
-                        value: Number.isFinite(next) ? next : 0,
-                      });
-                    }}
+                    onCheckpoint={onCheckpoint}
+                    onChange={(next) =>
+                      onUpdateEffect(effect.id, { value: next })
+                    }
                     className="w-20 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
                   />
                 )}
@@ -2139,6 +2131,83 @@ function MeasuredGrowBox({
   );
 }
 
+function parseDeferredNumber(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (
+    trimmed === "" ||
+    trimmed === "-" ||
+    trimmed === "+" ||
+    trimmed === "." ||
+    trimmed === "-." ||
+    trimmed === "+."
+  ) {
+    return null;
+  }
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : null;
+}
+
+function DeferredNumberInput({
+  value,
+  onChange,
+  onCheckpoint,
+  normalize,
+  ...props
+}: Omit<
+  React.InputHTMLAttributes<HTMLInputElement>,
+  "type" | "value" | "onChange" | "onBlur" | "onFocus" | "onKeyDown"
+> & {
+  value: number;
+  onChange: (next: number) => void;
+  onCheckpoint?: () => void;
+  normalize?: (n: number) => number;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const focusedRef = useRef(false);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+
+  useEffect(() => {
+    if (!focusedRef.current) setDraft(String(value));
+  }, [value]);
+
+  function commit(raw: string) {
+    const parsed = parseDeferredNumber(raw);
+    if (parsed === null) {
+      setDraft(String(valueRef.current));
+      return;
+    }
+    const next = normalize ? normalize(parsed) : parsed;
+    setDraft(String(next));
+    if (next !== valueRef.current) onChange(next);
+  }
+
+  return (
+    <input
+      {...props}
+      type="text"
+      inputMode="decimal"
+      autoComplete="off"
+      spellCheck={false}
+      value={draft}
+      onFocus={() => {
+        focusedRef.current = true;
+        onCheckpoint?.();
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={(e) => {
+        focusedRef.current = false;
+        commit(e.target.value);
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        e.currentTarget.blur();
+      }}
+    />
+  );
+}
+
 function BoundNumberInput({
   label,
   value,
@@ -2150,35 +2219,14 @@ function BoundNumberInput({
   onCheckpoint: () => void;
   onChange: (n: number) => void;
 }) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-
-  function commit(raw: string) {
-    const n = Number(raw);
-    const next = Number.isFinite(n) ? n : value;
-    setDraft(String(next));
-    if (next !== value) onChange(next);
-  }
-
   return (
     <label className="block text-sm text-black">
       <span className="text-black/70">{label}</span>
-      <input
-        type="text"
-        inputMode="decimal"
+      <DeferredNumberInput
         aria-label={label}
-        value={draft}
-        onFocus={() => onCheckpoint()}
-        onChange={(e) => {
-          const raw = e.target.value;
-          setDraft(raw);
-          if (raw === "" || raw === "-" || raw === "." || raw === "-.") return;
-          const n = Number(raw);
-          if (Number.isFinite(n)) onChange(n);
-        }}
-        onBlur={() => commit(draft)}
+        value={value}
+        onCheckpoint={onCheckpoint}
+        onChange={onChange}
         className="mt-1.5 w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
       />
     </label>
@@ -3085,56 +3133,30 @@ function LayoutPageSettings({
 
         <label className="mt-4 block text-sm text-black">
           <span className="text-black/70">Horizontal ticks</span>
-          <input
-            type="number"
+          <DeferredNumberInput
             min={RESULTS_GRID_TICKS_MIN}
             max={RESULTS_GRID_TICKS_MAX}
             step={1}
             value={horizontalTicks}
             aria-label="Horizontal grid ticks"
-            onFocus={() => onCheckpoint()}
-            onChange={(e) => {
-              const next =
-                e.target.value === ""
-                  ? RESULTS_GRID_TICKS_MIN
-                  : Number(e.target.value);
-              onPatch({
-                horizontalTicks: Number.isFinite(next) ? next : horizontalTicks,
-              });
-            }}
-            onBlur={() =>
-              onPatch({
-                horizontalTicks: normalizeGridTicks(horizontalTicks),
-              })
-            }
+            onCheckpoint={onCheckpoint}
+            onChange={(next) => onPatch({ horizontalTicks: next })}
+            normalize={normalizeGridTicks}
             className="mt-1.5 w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
           />
         </label>
 
         <label className="mt-4 block text-sm text-black">
           <span className="text-black/70">Vertical ticks</span>
-          <input
-            type="number"
+          <DeferredNumberInput
             min={RESULTS_GRID_TICKS_MIN}
             max={RESULTS_GRID_TICKS_MAX}
             step={1}
             value={verticalTicks}
             aria-label="Vertical grid ticks"
-            onFocus={() => onCheckpoint()}
-            onChange={(e) => {
-              const next =
-                e.target.value === ""
-                  ? RESULTS_GRID_TICKS_MIN
-                  : Number(e.target.value);
-              onPatch({
-                verticalTicks: Number.isFinite(next) ? next : verticalTicks,
-              });
-            }}
-            onBlur={() =>
-              onPatch({
-                verticalTicks: normalizeGridTicks(verticalTicks),
-              })
-            }
+            onCheckpoint={onCheckpoint}
+            onChange={(next) => onPatch({ verticalTicks: next })}
+            normalize={normalizeGridTicks}
             className="mt-1.5 w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
           />
         </label>
@@ -3267,27 +3289,9 @@ function FontSizeControl({
   onCheckpoint: () => void;
   onChange: (next: number) => void;
 }) {
-  const [draft, setDraft] = useState(String(value));
-
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-
   function applyDelta(delta: number) {
     onCheckpoint();
     onChange(normalizeResultsFontSize(value + delta));
-  }
-
-  function commit(raw: string) {
-    const n = Number(raw);
-    const next = Number.isFinite(n)
-      ? normalizeResultsFontSize(n)
-      : normalizeResultsFontSize(value);
-    setDraft(String(next));
-    if (next !== value) {
-      onCheckpoint();
-      onChange(next);
-    }
   }
 
   const buttonClass =
@@ -3306,22 +3310,15 @@ function FontSizeControl({
         <button type="button" aria-label="Increase font size by 2" onClick={() => applyDelta(2)} className={buttonClass}>
           +2
         </button>
-        <input
-          type="number"
+        <DeferredNumberInput
           min={RESULTS_FONT_SIZE_MIN}
           max={RESULTS_FONT_SIZE_MAX}
           step={1}
           aria-label={label ? `${label} font size` : "Font size"}
-          value={draft}
-          onFocus={() => onCheckpoint()}
-          onChange={(e) => {
-            const raw = e.target.value;
-            setDraft(raw);
-            if (raw === "") return;
-            const n = Number(raw);
-            if (Number.isFinite(n)) onChange(normalizeResultsFontSize(n));
-          }}
-          onBlur={() => commit(draft)}
+          value={value}
+          onCheckpoint={onCheckpoint}
+          onChange={onChange}
+          normalize={normalizeResultsFontSize}
           className="h-8 w-16 rounded-md border border-black/15 bg-white px-2 text-sm text-black outline-none focus:border-[#2f5d76]"
         />
       </div>
@@ -3897,17 +3894,6 @@ function ResultsRichTextEditor({
   );
 }
 
-type QuizSection = {
-  id: string;
-  name: string;
-  localVariables: ProjectVariable[];
-  localDefaultAnswers: AnswerOption[];
-  localDefaultQuestionColor: string | null;
-  boxes: CanvasBox[];
-  transitions: Transition[];
-  camera: Camera;
-};
-
 type ResultsTextSegment =
   | { id: string; kind: "text"; text: string }
   | { id: string; kind: "variable"; variableId: string };
@@ -4052,6 +4038,18 @@ type QuizUiDocument = {
   images: ResultsImage[];
 };
 
+type QuizSection = {
+  id: string;
+  name: string;
+  localVariables: ProjectVariable[];
+  localDefaultAnswers: AnswerOption[];
+  localDefaultQuestionColor: string | null;
+  localQuizUi: QuizUiDocument | null;
+  boxes: CanvasBox[];
+  transitions: Transition[];
+  camera: Camera;
+};
+
 type EditorSnapshot = {
   projectName: string;
   variables: ProjectVariable[];
@@ -4065,6 +4063,7 @@ type EditorSnapshot = {
   quizUi: QuizUiDocument;
   listing: QuizListing;
   editorView: "section" | "results" | "quiz-ui";
+  quizUiScope: "project" | "section";
   selectedId: string | null;
   selectedTransitionId: string | null;
   selectedResultsTextId: string | null;
@@ -4260,6 +4259,10 @@ function normalizeSection(raw: unknown): QuizSection | null {
       : [],
     localDefaultAnswers: normalizeAnswers(s.localDefaultAnswers),
     localDefaultQuestionColor: parseHexColor(s.localDefaultQuestionColor),
+    localQuizUi:
+      s.localQuizUi && typeof s.localQuizUi === "object"
+        ? normalizeQuizUi(s.localQuizUi)
+        : null,
     boxes,
     transitions: exclusiveTransitions,
     camera: {
@@ -4658,7 +4661,11 @@ function quizUiAnswerId(index: number) {
   return `${QUIZ_UI_ANSWER_ID_PREFIX}${index}`;
 }
 
-function emptyQuizUiDocument(pageWidth = 1280, pageHeight = 800): QuizUiDocument {
+function defaultQuizUiStack(
+  pageWidth = 1280,
+  pageHeight = 800,
+  answerCount = 2,
+): Pick<QuizUiDocument, "question" | "answers" | "nextButton" | "backButton"> {
   const width = Math.max(320, pageWidth);
   const height = Math.max(480, pageHeight);
   const contentWidth = Math.max(200, Math.min(576, width) - 32);
@@ -4670,12 +4677,14 @@ function emptyQuizUiDocument(pageWidth = 1280, pageHeight = 800): QuizUiDocument
   const gapAfterQuestion = 24;
   const gapBeforeNext = 24;
   const gapBeforeBack = 16;
-  const answerCount = 2;
+  const count = Math.max(0, Math.round(answerCount));
+  const answersBlock =
+    count > 0
+      ? gapAfterQuestion + count * answerH + Math.max(0, count - 1) * gapAnswers
+      : 0;
   const stackH =
     questionH +
-    gapAfterQuestion +
-    answerCount * answerH +
-    (answerCount - 1) * gapAnswers +
+    answersBlock +
     gapBeforeNext +
     buttonH +
     gapBeforeBack +
@@ -4689,18 +4698,21 @@ function emptyQuizUiDocument(pageWidth = 1280, pageHeight = 800): QuizUiDocument
     height: questionH,
     fontSize: QUIZ_UI_QUESTION_FONT_SIZE,
   };
-  y += questionH + gapAfterQuestion;
+  y += questionH;
   const answers: QuizUiRect[] = [];
-  for (let i = 0; i < answerCount; i += 1) {
-    answers.push({
-      id: quizUiAnswerId(i),
-      x: left,
-      y,
-      width: contentWidth,
-      height: answerH,
-      fontSize: QUIZ_UI_ANSWER_FONT_SIZE,
-    });
-    y += answerH + (i < answerCount - 1 ? gapAnswers : 0);
+  if (count > 0) {
+    y += gapAfterQuestion;
+    for (let i = 0; i < count; i += 1) {
+      answers.push({
+        id: quizUiAnswerId(i),
+        x: left,
+        y,
+        width: contentWidth,
+        height: answerH,
+        fontSize: QUIZ_UI_ANSWER_FONT_SIZE,
+      });
+      y += answerH + (i < count - 1 ? gapAnswers : 0);
+    }
   }
   y += gapBeforeNext;
   const nextButton: QuizUiRect = {
@@ -4724,16 +4736,35 @@ function emptyQuizUiDocument(pageWidth = 1280, pageHeight = 800): QuizUiDocument
     backgroundColor: QUIZ_UI_BACK_BACKGROUND,
     textColor: QUIZ_UI_BACK_TEXT,
   };
+  return { question, answers, nextButton, backButton };
+}
+
+function defaultQuizUiChromePosition(
+  id: string,
+  pageWidth: number,
+  pageHeight: number,
+  answerCount: number,
+): Pick<QuizUiRect, "x" | "y" | "width" | "height"> | null {
+  const stack = defaultQuizUiStack(pageWidth, pageHeight, answerCount);
+  if (id === stack.question.id) return stack.question;
+  if (id === stack.nextButton.id) return stack.nextButton;
+  if (id === stack.backButton.id) return stack.backButton;
+  return stack.answers.find((answer) => answer.id === id) ?? null;
+}
+
+function emptyQuizUiDocument(
+  pageWidth = 1280,
+  pageHeight = 800,
+  answerCount = 2,
+): QuizUiDocument {
+  const stack = defaultQuizUiStack(pageWidth, pageHeight, answerCount);
   return {
     customized: false,
     backgroundColor: QUIZ_UI_BACKGROUND_DEFAULT,
     gridVisible: false,
     horizontalTicks: RESULTS_GRID_TICKS_DEFAULT,
     verticalTicks: RESULTS_GRID_TICKS_DEFAULT,
-    question,
-    answers,
-    nextButton,
-    backButton,
+    ...stack,
     textBoxes: [],
     images: [],
   };
@@ -4843,16 +4874,17 @@ function resolvedQuizUi(
   doc: QuizUiDocument,
   pageWidth: number,
   pageHeight: number,
+  answerCount?: number,
 ): QuizUiDocument {
   const extras = {
     textBoxes: doc.textBoxes ?? [],
     images: doc.images ?? [],
   };
-  if (doc.customized) return withQuizUiChromeFontDefaults({ ...doc, ...extras });
-  return withQuizUiChromeFontDefaults({
-    ...emptyQuizUiDocument(pageWidth, pageHeight),
-    ...extras,
-  });
+  const count = Math.max(0, answerCount ?? doc.answers.length);
+  const base = doc.customized
+    ? { ...doc, ...extras }
+    : { ...emptyQuizUiDocument(pageWidth, pageHeight, count), ...extras };
+  return withQuizUiChromeFontDefaults(ensureQuizUiAnswerSlots(base, count));
 }
 
 function quizUiRects(ui: QuizUiDocument): LayoutDragItem[] {
@@ -5058,6 +5090,10 @@ function quizUiAnswerRects(ui: QuizUiDocument, count: number): QuizUiRect[] {
       out.push(slots[i]);
       continue;
     }
+    if (i === 0) {
+      out.push({ ...template, id: quizUiAnswerId(0) });
+      continue;
+    }
     const prev = out[i - 1] ?? template;
     out.push({
       id: quizUiAnswerId(i),
@@ -5069,6 +5105,66 @@ function quizUiAnswerRects(ui: QuizUiDocument, count: number): QuizUiRect[] {
     });
   }
   return out;
+}
+
+function ensureQuizUiAnswerSlots(
+  ui: QuizUiDocument,
+  count: number,
+): QuizUiDocument {
+  const n = Math.max(0, count);
+  if (n === ui.answers.length) return ui;
+  if (n < ui.answers.length) {
+    return { ...ui, answers: ui.answers.slice(0, n) };
+  }
+  const answers = quizUiAnswerRects(ui, n);
+  const last = answers[answers.length - 1];
+  if (!last) return { ...ui, answers };
+  const minNextY = last.y + last.height + 24;
+  const shift = Math.max(0, minNextY - ui.nextButton.y);
+  if (shift <= 0) return { ...ui, answers };
+  return {
+    ...ui,
+    answers,
+    nextButton: { ...ui.nextButton, y: ui.nextButton.y + shift },
+    backButton: { ...ui.backButton, y: ui.backButton.y + shift },
+  };
+}
+
+function quizUiButtonShiftY(ui: QuizUiDocument, visibleCount: number) {
+  const slots = ui.answers;
+  if (slots.length === 0) return 0;
+  const shown = Math.min(Math.max(0, visibleCount), slots.length);
+  if (shown >= slots.length) return 0;
+  const lastShownBottom =
+    shown === 0
+      ? ui.question.y + ui.question.height
+      : slots[shown - 1].y + slots[shown - 1].height;
+  const lastSlot = slots[slots.length - 1];
+  return Math.max(0, lastSlot.y + lastSlot.height - lastShownBottom);
+}
+
+function quizUiPlayLayout(ui: QuizUiDocument, visibleCount: number) {
+  const shiftY = quizUiButtonShiftY(ui, visibleCount);
+  return {
+    answers: quizUiAnswerRects(ui, visibleCount),
+    nextButton: { ...ui.nextButton, y: ui.nextButton.y - shiftY },
+    backButton: { ...ui.backButton, y: ui.backButton.y - shiftY },
+    shiftY,
+  };
+}
+
+function maxQuestionAnswerCount(
+  sectionList: { boxes: { kind: string; answers?: { id: string }[] }[] }[],
+) {
+  let max = 0;
+  for (const section of sectionList) {
+    for (const box of section.boxes) {
+      if (box.kind === "question") {
+        max = Math.max(max, box.answers?.length ?? 0);
+      }
+    }
+  }
+  return max;
 }
 
 function resultsContentHeight(
@@ -5515,6 +5611,7 @@ export function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
           : [],
     localDefaultAnswers: [],
     localDefaultQuestionColor: null,
+    localQuizUi: null,
     boxes,
         transitions: (
           Array.isArray(doc.transitions)
@@ -5713,6 +5810,7 @@ export function CreateQuizEditor({
   );
   const [results, setResults] = useState<ResultsDocument>(initialQuiz.results);
   const [quizUi, setQuizUi] = useState<QuizUiDocument>(initialQuiz.quizUi);
+  const [quizUiScope, setQuizUiScope] = useState<"project" | "section">("project");
   const [selectedResultsTextId, setSelectedResultsTextId] = useState<string | null>(null);
   const [selectedResultsAxisId, setSelectedResultsAxisId] = useState<string | null>(null);
   const [selectedResultsCompassId, setSelectedResultsCompassId] = useState<string | null>(
@@ -5777,6 +5875,9 @@ export function CreateQuizEditor({
   const [localDefaultQuestionColor, setLocalDefaultQuestionColor] = useState<
     string | null
   >(initialSection.localDefaultQuestionColor);
+  const [localQuizUi, setLocalQuizUi] = useState<QuizUiDocument | null>(
+    initialSection.localQuizUi ?? null,
+  );
   const [transitions, setTransitions] = useState<Transition[]>(initialSection.transitions);
   const [transitionDraft, setTransitionDraft] = useState<TransitionDraft | null>(null);
   const [focusVarId, setFocusVarId] = useState<string | null>(null);
@@ -5802,6 +5903,8 @@ export function CreateQuizEditor({
   const defaultAnswerTextColorRef = useRef(defaultAnswerTextColor);
   const localDefaultAnswersRef = useRef(localDefaultAnswers);
   const localDefaultQuestionColorRef = useRef(localDefaultQuestionColor);
+  const localQuizUiRef = useRef(localQuizUi);
+  const quizUiScopeRef = useRef(quizUiScope);
   const transitionsRef = useRef(transitions);
   const selectedIdRef = useRef(selectedId);
   const selectedTransitionIdRef = useRef(selectedTransitionId);
@@ -5825,6 +5928,8 @@ export function CreateQuizEditor({
   const axisLabelHeightRef = useRef<Record<string, number>>({});
   const resultsRef = useRef(results);
   const quizUiRef = useRef(quizUi);
+  const activeQuizUiRef = useRef(quizUi);
+  const maxQuizUiAnswersRef = useRef(2);
   const editorViewRef = useRef(editorView);
   const resultsScaleRef = useRef(1);
   const resultsLeftInsetRef = useRef(0);
@@ -5843,6 +5948,8 @@ export function CreateQuizEditor({
   defaultAnswerTextColorRef.current = defaultAnswerTextColor;
   localDefaultAnswersRef.current = localDefaultAnswers;
   localDefaultQuestionColorRef.current = localDefaultQuestionColor;
+  localQuizUiRef.current = localQuizUi;
+  quizUiScopeRef.current = quizUiScope;
   transitionsRef.current = transitions;
   selectedIdRef.current = selectedId;
   selectedTransitionIdRef.current = selectedTransitionId;
@@ -5862,8 +5969,39 @@ export function CreateQuizEditor({
   axisLabelHeightRef.current = axisLabelHeights;
   resultsRef.current = results;
   quizUiRef.current = quizUi;
+  const editorQuizUi =
+    quizUiScope === "section" && localQuizUi ? localQuizUi : quizUi;
+  activeQuizUiRef.current = editorQuizUi;
   editorViewRef.current = editorView;
   transitionDraftRef.current = transitionDraft;
+
+  const sectionsForQuizUiCount =
+    quizGraph ??
+    sections.map((section) =>
+      section.id === activeSectionId
+        ? { ...section, boxes, localQuizUi }
+        : section,
+    );
+  const quizUiAnswerCount = (() => {
+    const inherited = sectionsForQuizUiCount.filter((section) => !section.localQuizUi);
+    const inheritedCount = maxQuestionAnswerCount(
+      inherited.length > 0 ? inherited : sectionsForQuizUiCount,
+    );
+    if (quizScreen?.kind === "question") {
+      const section = sectionsForQuizUiCount.find(
+        (item) => item.id === quizScreen.sectionId,
+      );
+      if (section?.localQuizUi) return maxQuestionAnswerCount([section]);
+      return inheritedCount;
+    }
+    if (quizUiScope === "section") {
+      return maxQuestionAnswerCount(
+        sectionsForQuizUiCount.filter((item) => item.id === activeSectionId),
+      );
+    }
+    return inheritedCount;
+  })();
+  maxQuizUiAnswersRef.current = quizUiAnswerCount;
 
   const pastRef = useRef<EditorSnapshot[]>([]);
   const futureRef = useRef<EditorSnapshot[]>([]);
@@ -5917,7 +6055,7 @@ export function CreateQuizEditor({
     editorView === "results"
       ? (results.textBoxes.find((box) => box.id === selectedResultsTextId) ?? null)
       : editorView === "quiz-ui" && selectedQuizUiId
-        ? ((quizUi.textBoxes ?? []).find((box) => box.id === selectedQuizUiId) ??
+        ? ((editorQuizUi.textBoxes ?? []).find((box) => box.id === selectedQuizUiId) ??
           null)
         : null;
   const selectedResultsAxis =
@@ -5940,7 +6078,7 @@ export function CreateQuizEditor({
           (item) => item.id === selectedResultsImageId,
         ) ?? null)
       : editorView === "quiz-ui" && selectedQuizUiId
-        ? ((quizUi.images ?? []).find((item) => item.id === selectedQuizUiId) ??
+        ? ((editorQuizUi.images ?? []).find((item) => item.id === selectedQuizUiId) ??
           null)
         : null;
   const allVariables = quizScreen
@@ -6038,6 +6176,7 @@ export function CreateQuizEditor({
             localVariables: localVariablesRef.current,
             localDefaultAnswers: localDefaultAnswersRef.current,
             localDefaultQuestionColor: localDefaultQuestionColorRef.current,
+            localQuizUi: localQuizUiRef.current,
             boxes: boxesRef.current,
             transitions: transitionsRef.current,
             camera: cameraRef.current,
@@ -6051,6 +6190,7 @@ export function CreateQuizEditor({
     localVariablesRef.current = section.localVariables;
     localDefaultAnswersRef.current = section.localDefaultAnswers;
     localDefaultQuestionColorRef.current = section.localDefaultQuestionColor ?? null;
+    localQuizUiRef.current = section.localQuizUi ?? null;
     boxesRef.current = section.boxes;
     transitionsRef.current = section.transitions;
     cameraRef.current = section.camera;
@@ -6058,6 +6198,7 @@ export function CreateQuizEditor({
     setLocalVariables(section.localVariables);
     setLocalDefaultAnswers(section.localDefaultAnswers);
     setLocalDefaultQuestionColor(section.localDefaultQuestionColor ?? null);
+    setLocalQuizUi(section.localQuizUi ?? null);
     setBoxes(section.boxes);
     setTransitions(section.transitions);
     setCamera(section.camera);
@@ -6065,6 +6206,38 @@ export function CreateQuizEditor({
     setSelectedTransitionId(null);
     setTransitionDraft(null);
     setMenu(null);
+  }
+
+  function updateActiveQuizUi(
+    updater: (prev: QuizUiDocument) => QuizUiDocument,
+  ) {
+    if (quizUiScopeRef.current === "section") {
+      setLocalQuizUi((prev) => {
+        const next = updater(prev ?? quizUiRef.current);
+        localQuizUiRef.current = next;
+        activeQuizUiRef.current = next;
+        return next;
+      });
+      return;
+    }
+    setQuizUi((prev) => {
+      const next = updater(prev);
+      quizUiRef.current = next;
+      activeQuizUiRef.current = next;
+      return next;
+    });
+  }
+
+  function cloneProjectQuizUiForSection(): QuizUiDocument {
+    const pageWidth = resultsBaseWidthRef.current;
+    const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+    const count = maxQuestionAnswerCount([{ boxes: boxesRef.current }]);
+    return {
+      ...structuredClone(
+        resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight, count),
+      ),
+      customized: true,
+    };
   }
 
   function getPersistedQuiz(): PersistedQuiz {
@@ -6101,6 +6274,7 @@ export function CreateQuizEditor({
       quizUi: quizUiRef.current,
       listing: listingRef.current,
       editorView: editorViewRef.current,
+      quizUiScope: quizUiScopeRef.current,
       selectedId: selectedIdRef.current,
       selectedTransitionId: selectedTransitionIdRef.current,
       selectedResultsTextId: selectedResultsTextIdRef.current,
@@ -6134,6 +6308,16 @@ export function CreateQuizEditor({
     quizUiRef.current = next.quizUi ?? emptyQuizUiDocument();
     listingRef.current = next.listing ?? emptyListing();
     editorViewRef.current = next.editorView;
+    const nextScope =
+      next.quizUiScope === "section" && (active.localQuizUi ?? null)
+        ? "section"
+        : "project";
+    quizUiScopeRef.current = nextScope;
+    const nextActiveUi =
+      nextScope === "section" && active.localQuizUi
+        ? active.localQuizUi
+        : (next.quizUi ?? emptyQuizUiDocument());
+    activeQuizUiRef.current = nextActiveUi;
     selectedIdRef.current = next.selectedId;
     selectedTransitionIdRef.current = next.selectedTransitionId;
     selectedResultsTextIdRef.current = next.selectedResultsTextId;
@@ -6160,6 +6344,7 @@ export function CreateQuizEditor({
     setActiveSectionId(active.id);
     setResults(next.results);
     setQuizUi(next.quizUi ?? emptyQuizUiDocument());
+    setQuizUiScope(nextScope);
     setListing(next.listing ?? emptyListing());
     setEditorView(next.editorView);
     if (next.editorView === "results") {
@@ -6198,6 +6383,8 @@ export function CreateQuizEditor({
     setSections(merged);
     activeSectionIdRef.current = next.id;
     setActiveSectionId(next.id);
+    quizUiScopeRef.current = "project";
+    setQuizUiScope("project");
     setEditorView("section");
     setSettingsPane((pane) =>
       pane === "results" || pane === "quiz-ui" ? "project" : pane,
@@ -6231,7 +6418,44 @@ export function CreateQuizEditor({
     }
   }
 
-  function openQuizUiView() {
+  function toggleLocalQuizUi(enabled: boolean) {
+    if (enabled === Boolean(localQuizUiRef.current)) return;
+    pushHistory();
+    if (enabled) {
+      const cloned = cloneProjectQuizUiForSection();
+      localQuizUiRef.current = cloned;
+      setLocalQuizUi(cloned);
+      return;
+    }
+    localQuizUiRef.current = null;
+    setLocalQuizUi(null);
+    quizUiScopeRef.current = "project";
+    setQuizUiScope("project");
+    if (editorViewRef.current === "quiz-ui") {
+      setEditorView("section");
+      setSettingsPane("section");
+      setSelectedQuizUiId(null);
+      setSelectedQuizUiIds([]);
+      setQuizUiPreview(false);
+    }
+  }
+
+  function openQuizUiView(scope: "project" | "section" = "project") {
+    const nextScope = scope === "section" ? "section" : "project";
+    if (nextScope === "section") {
+      if (!localQuizUiRef.current) {
+        const cloned = cloneProjectQuizUiForSection();
+        localQuizUiRef.current = cloned;
+        setLocalQuizUi(cloned);
+      }
+    }
+    const scopeChanged = quizUiScopeRef.current !== nextScope;
+    quizUiScopeRef.current = nextScope;
+    setQuizUiScope(nextScope);
+    if (scopeChanged) {
+      setSelectedQuizUiId(null);
+      setSelectedQuizUiIds([]);
+    }
     if (editorViewRef.current === "quiz-ui") {
       setSettingsPane("quiz-ui");
       setQuizUiPreview(false);
@@ -6422,6 +6646,8 @@ export function CreateQuizEditor({
     setSections(nextSections);
     activeSectionIdRef.current = created.id;
     setActiveSectionId(created.id);
+    quizUiScopeRef.current = "project";
+    setQuizUiScope("project");
     setEditorView("section");
     loadSection(created);
     setSettingsPane("section");
@@ -6459,6 +6685,8 @@ export function CreateQuizEditor({
     setSections(remaining);
     activeSectionIdRef.current = next.id;
     setActiveSectionId(next.id);
+    quizUiScopeRef.current = "project";
+    setQuizUiScope("project");
     setEditorView("section");
     loadSection(next);
     setSelectedId(null);
@@ -6504,7 +6732,7 @@ export function CreateQuizEditor({
       persistQuiz(getPersistedQuiz());
     }, persistDelay);
     return () => window.clearTimeout(timeoutId);
-  }, [playOnly, projectName, sectionName, sections, activeSectionId, boxes, variables, localVariables, defaultAnswers, defaultQuestionColor, defaultAnswerColor, defaultAnswerTextColor, localDefaultAnswers, localDefaultQuestionColor, transitions, camera, results, quizUi, listing]);
+  }, [playOnly, projectName, sectionName, sections, activeSectionId, boxes, variables, localVariables, defaultAnswers, defaultQuestionColor, defaultAnswerColor, defaultAnswerTextColor, localDefaultAnswers, localDefaultQuestionColor, localQuizUi, transitions, camera, results, quizUi, listing]);
 
   useEffect(() => {
     if (playOnly) return;
@@ -6817,7 +7045,7 @@ export function CreateQuizEditor({
           );
           const ticks =
             drag.layoutTarget === "quiz-ui"
-              ? resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight)
+              ? resolvedQuizUi(activeQuizUiRef.current, pageWidth, viewportHeight, maxQuizUiAnswersRef.current)
               : resultsRef.current;
           if (e.ctrlKey) {
             const { stepX, stepY } = resultsGridSteps(
@@ -6838,10 +7066,8 @@ export function CreateQuizEditor({
             ));
           }
           if (drag.layoutTarget === "quiz-ui") {
-            setQuizUi((prev) => {
-              const ui = prev.customized
-                ? prev
-                : resolvedQuizUi(prev, pageWidth, viewportHeight);
+            updateActiveQuizUi((prev) => {
+              const ui = resolvedQuizUi(prev, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
               const pageHeight = Math.max(
                 quizUiContentHeight(ui, viewportHeight),
                 nextY + bounds.height + RESULTS_PAGE_BOTTOM_PAD,
@@ -6909,7 +7135,7 @@ export function CreateQuizEditor({
           const mouseY = viewportRect
             ? Math.max(0, (e.clientY - viewportRect.top + (el?.scrollTop ?? 0)) / scale)
             : nextY;
-          const base = resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight);
+          const base = resolvedQuizUi(activeQuizUiRef.current, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
           if (e.ctrlKey) {
             const { stepX, stepY } = resultsGridSteps(
               pageWidth,
@@ -6928,8 +7154,8 @@ export function CreateQuizEditor({
               stepY,
             ));
           }
-          setQuizUi((prev) => {
-            const ui = prev.customized ? prev : base;
+          updateActiveQuizUi((prev) => {
+            const ui = resolvedQuizUi(prev, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
             const pageHeight = Math.max(
               quizUiContentHeight(ui, viewportHeight),
               nextY + height + RESULTS_PAGE_BOTTOM_PAD,
@@ -7053,7 +7279,7 @@ export function CreateQuizEditor({
           );
           const ticks =
             drag.layoutTarget === "quiz-ui"
-              ? resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight)
+              ? resolvedQuizUi(activeQuizUiRef.current, pageWidth, viewportHeight, maxQuizUiAnswersRef.current)
               : resultsRef.current;
           const snapSteps = e.ctrlKey
             ? {
@@ -7100,7 +7326,7 @@ export function CreateQuizEditor({
               drag.layoutTarget === "quiz-ui"
                 ? quizUiItemSizeLimits(
                     quizUiItemKindForId(
-                      resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight),
+                      resolvedQuizUi(activeQuizUiRef.current, pageWidth, viewportHeight, maxQuizUiAnswersRef.current),
                       item.id,
                     ) ?? "answer",
                   )
@@ -7117,10 +7343,8 @@ export function CreateQuizEditor({
           }
           const scaled = scaleItemsFromTopRight(drag.groupItems, scaleX, scaleY);
           if (drag.layoutTarget === "quiz-ui") {
-            setQuizUi((prev) => {
-              const ui = prev.customized
-                ? prev
-                : resolvedQuizUi(prev, pageWidth, viewportHeight);
+            updateActiveQuizUi((prev) => {
+              const ui = resolvedQuizUi(prev, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
               return patchQuizUiRects(ui, scaled);
             });
           } else {
@@ -7144,7 +7368,7 @@ export function CreateQuizEditor({
           const mouseY = viewportRect
             ? Math.max(0, (e.clientY - viewportRect.top + (el?.scrollTop ?? 0)) / scale)
             : drag.originY! + totalDy;
-          const base = resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight);
+          const base = resolvedQuizUi(activeQuizUiRef.current, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
           const snapSteps = e.ctrlKey
             ? {
                 ...resultsGridSteps(
@@ -7158,8 +7382,8 @@ export function CreateQuizEditor({
               }
             : null;
           const limits = quizUiItemSizeLimits(drag.quizUiItemKind);
-          setQuizUi((prev) => {
-            const ui = prev.customized ? prev : base;
+          updateActiveQuizUi((prev) => {
+            const ui = resolvedQuizUi(prev, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
             const pageHeight = Math.max(
               quizUiContentHeight(ui, viewportHeight),
               drag.originY! + drag.originHeight! + RESULTS_PAGE_BOTTOM_PAD,
@@ -7376,6 +7600,7 @@ export function CreateQuizEditor({
             quizUiRef.current,
             resultsBaseWidthRef.current,
             viewportRef.current?.clientHeight ?? 800,
+            maxQuizUiAnswersRef.current,
           );
           const ids = quizUiRects(ui)
             .filter((rect) => rectsIntersect(rect, marquee))
@@ -7748,7 +7973,7 @@ export function CreateQuizEditor({
     e.preventDefault();
     const pageWidth = resultsBaseWidthRef.current;
     const viewportHeight = viewportRef.current?.clientHeight ?? 800;
-    const ui = resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight);
+    const ui = resolvedQuizUi(activeQuizUiRef.current, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
     const rect = findQuizUiRect(ui, itemId);
     const kind = quizUiItemKindForId(ui, itemId);
     if (!rect || !kind) return;
@@ -7796,7 +8021,7 @@ export function CreateQuizEditor({
     e.stopPropagation();
     const pageWidth = resultsBaseWidthRef.current;
     const viewportHeight = viewportRef.current?.clientHeight ?? 800;
-    const ui = resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight);
+    const ui = resolvedQuizUi(activeQuizUiRef.current, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
     if (kindOverride === "text-image") {
       const box = (ui.textBoxes ?? []).find((item) => item.id === itemId);
       if (!box?.showImage) return;
@@ -7900,6 +8125,7 @@ export function CreateQuizEditor({
               quizUiRef.current,
               pageWidth,
               viewportHeight,
+              maxQuizUiAnswersRef.current,
             );
             return ids.flatMap((id) => {
               const rect = findQuizUiRect(ui, id);
@@ -8613,10 +8839,8 @@ export function CreateQuizEditor({
       ),
       RESULTS_TEXT_DEFAULT_HEIGHT,
     );
-    setQuizUi((prev) => {
-      const base = prev.customized
-        ? prev
-        : resolvedQuizUi(prev, pageWidth, viewportHeight);
+    updateActiveQuizUi((prev) => {
+      const base = resolvedQuizUi(prev, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
       return {
         ...base,
         customized: true,
@@ -8646,10 +8870,8 @@ export function CreateQuizEditor({
       Math.max(viewportHeight, menu.contentY + size + RESULTS_PAGE_BOTTOM_PAD),
       size,
     );
-    setQuizUi((prev) => {
-      const base = prev.customized
-        ? prev
-        : resolvedQuizUi(prev, pageWidth, viewportHeight);
+    updateActiveQuizUi((prev) => {
+      const base = resolvedQuizUi(prev, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
       return {
         ...base,
         customized: true,
@@ -8668,7 +8890,7 @@ export function CreateQuizEditor({
     if (!menu || menu.kind !== "quiz-ui-text") return;
     const textId = menu.textId;
     pushHistory();
-    setQuizUi((prev) => ({
+    updateActiveQuizUi((prev) => ({
       ...prev,
       textBoxes: (prev.textBoxes ?? []).filter((box) => box.id !== textId),
     }));
@@ -8681,7 +8903,7 @@ export function CreateQuizEditor({
     if (!menu || menu.kind !== "quiz-ui-image") return;
     const imageId = menu.imageId;
     pushHistory();
-    setQuizUi((prev) => ({
+    updateActiveQuizUi((prev) => ({
       ...prev,
       images: (prev.images ?? []).filter((item) => item.id !== imageId),
     }));
@@ -8767,7 +8989,7 @@ export function CreateQuizEditor({
 
   function updateResultsTextBox(id: string, patch: Partial<ResultsTextBox>) {
     if (editorViewRef.current === "quiz-ui") {
-      setQuizUi((prev) => ({
+      updateActiveQuizUi((prev) => ({
         ...prev,
         customized: true,
         textBoxes: (prev.textBoxes ?? []).map((box) =>
@@ -8813,7 +9035,7 @@ export function CreateQuizEditor({
 
   function updateResultsImage(id: string, patch: Partial<ResultsImage>) {
     if (editorViewRef.current === "quiz-ui") {
-      setQuizUi((prev) => ({
+      updateActiveQuizUi((prev) => ({
         ...prev,
         customized: true,
         images: (prev.images ?? []).map((item) =>
@@ -8839,7 +9061,7 @@ export function CreateQuizEditor({
         item.id === imageId ? { ...item, rules: updater(item.rules) } : item,
       );
     if (editorViewRef.current === "quiz-ui") {
-      setQuizUi((prev) => ({
+      updateActiveQuizUi((prev) => ({
         ...prev,
         customized: true,
         images: apply(prev.images ?? []),
@@ -8914,10 +9136,13 @@ export function CreateQuizEditor({
   ) {
     const pageWidth = resultsBaseWidthRef.current;
     const viewportHeight = viewportRef.current?.clientHeight ?? 800;
-    setQuizUi((prev) => {
-      const base = prev.customized
-        ? prev
-        : emptyQuizUiDocument(pageWidth, viewportHeight);
+    updateActiveQuizUi((prev) => {
+      const base = resolvedQuizUi(
+        prev,
+        pageWidth,
+        viewportHeight,
+        maxQuizUiAnswersRef.current,
+      );
       return {
         ...base,
         ...patch,
@@ -8944,11 +9169,32 @@ export function CreateQuizEditor({
   ) {
     const pageWidth = resultsBaseWidthRef.current;
     const viewportHeight = viewportRef.current?.clientHeight ?? 800;
-    setQuizUi((prev) => {
-      const base = prev.customized
-        ? prev
-        : resolvedQuizUi(prev, pageWidth, viewportHeight);
+    updateActiveQuizUi((prev) => {
+      const base = resolvedQuizUi(prev, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
       return patchQuizUiRect(base, id, patch);
+    });
+  }
+
+  function resetQuizUiChromePosition(id: string) {
+    const pageWidth = resultsBaseWidthRef.current;
+    const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+    const current = resolvedQuizUi(activeQuizUiRef.current, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
+    const next = defaultQuizUiChromePosition(
+      id,
+      pageWidth,
+      viewportHeight,
+      current.answers.length,
+    );
+    if (!next) return;
+    pushHistory();
+    updateActiveQuizUi((prev) => {
+      const base = resolvedQuizUi(prev, pageWidth, viewportHeight, maxQuizUiAnswersRef.current);
+      return patchQuizUiRect(base, id, {
+        x: next.x,
+        y: next.y,
+        width: next.width,
+        height: next.height,
+      });
     });
   }
 
@@ -9920,10 +10166,16 @@ export function CreateQuizEditor({
   const showQuizUiSettings = isQuizUiView && settingsPane === "quiz-ui";
   const showSectionSettings =
     !isResultsView && !isQuizUiView && settingsPane === "section";
+  const playQuizUi =
+    quizScreen?.kind === "question"
+      ? ((quizGraph ?? sections).find((section) => section.id === quizScreen.sectionId)
+          ?.localQuizUi ?? quizUi)
+      : editorQuizUi;
   const quizUiPage = resolvedQuizUi(
-    quizUi,
+    playQuizUi,
     resultsBaseWidth,
     viewportSize.height || 800,
+    quizUiAnswerCount,
   );
   const quizUiPageHeight = quizUiContentHeight(
     quizUiPage,
@@ -9945,14 +10197,6 @@ export function CreateQuizEditor({
   const resultsPaintOffsetX = resultsPreview ? resultsPlayFit.offsetX : 0;
   const quizUiPaintScale = quizUiPreview ? quizUiPlayFit.scale : resultsScale;
   const quizUiPaintOffsetX = quizUiPreview ? quizUiPlayFit.offsetX : 0;
-  const quizPlayPageHeight = Math.max(
-    viewportSize.height || 0,
-    quizUiContentHeight(quizUiPage, viewportSize.height || 800),
-  );
-  const quizPlayFit =
-    quizScreen?.kind === "question"
-      ? horizontalPlayFit(quizUiHorizontalBounds(quizUiPage), resultsBaseWidth)
-      : { scale: 1, offsetX: 0 };
   const resultsMultiSelected = selectedResultsIds.length > 1;
   const quizUiMultiSelected = selectedQuizUiIds.length > 1;
   const selectedQuizUiChromeKind =
@@ -9995,6 +10239,21 @@ export function CreateQuizEditor({
       ? findQuestionBox(quizGraph, quizScreen)
       : null;
   const quizAnswers = quizQuestionBox?.answers ?? [];
+  const quizPlayLayout = quizUiPlayLayout(quizUiPage, quizAnswers.length);
+  const quizPlayUi = {
+    ...quizUiPage,
+    answers: quizPlayLayout.answers,
+    nextButton: quizPlayLayout.nextButton,
+    backButton: quizPlayLayout.backButton,
+  };
+  const quizPlayPageHeight = quizUiContentHeight(
+    quizPlayUi,
+    viewportSize.height || 800,
+  );
+  const quizPlayFit =
+    quizScreen?.kind === "question"
+      ? horizontalPlayFit(quizUiHorizontalBounds(quizPlayUi), resultsBaseWidth)
+      : { scale: 1, offsetX: 0 };
   const quizCanGoNext =
     Boolean(quizQuestionBox) &&
     (quizAnswers.length === 0 || quizSelectedAnswerId !== null);
@@ -10052,7 +10311,11 @@ export function CreateQuizEditor({
               {section.name.trim() || "Untitled Section"}
             </option>
           ))}
-          <option value={QUIZ_UI_VIEW_ID}>Quiz UI</option>
+          <option value={QUIZ_UI_VIEW_ID}>
+            {isQuizUiView && quizUiScope === "section"
+              ? `${sectionName.trim() || "Untitled Section"} Quiz UI`
+              : "Quiz UI"}
+          </option>
           <option value={RESULTS_VIEW_ID}>Results</option>
         </select>
         <button
@@ -10907,7 +11170,7 @@ export function CreateQuizEditor({
           </div>
         ) : isQuizUiView ? (
           <div
-            className="relative overflow-x-clip overflow-y-clip"
+            className="relative overflow-x-clip"
             style={{
               backgroundColor: quizUiPage.backgroundColor,
               marginLeft: quizUiPreview ? 0 : resultsLeftInset,
@@ -11824,7 +12087,7 @@ export function CreateQuizEditor({
               pushHistory();
               const id = selectedResultsText.id;
               if (editorView === "quiz-ui") {
-                setQuizUi((prev) => ({
+                updateActiveQuizUi((prev) => ({
                   ...prev,
                   textBoxes: (prev.textBoxes ?? []).filter((box) => box.id !== id),
                 }));
@@ -12638,7 +12901,7 @@ export function CreateQuizEditor({
               pushHistory();
               const id = selectedResultsImage.id;
               if (editorView === "quiz-ui") {
-                setQuizUi((prev) => ({
+                updateActiveQuizUi((prev) => ({
                   ...prev,
                   images: (prev.images ?? []).filter((item) => item.id !== id),
                 }));
@@ -12720,6 +12983,13 @@ export function CreateQuizEditor({
               />
             </section>
           )}
+          <button
+            type="button"
+            onClick={() => resetQuizUiChromePosition(selectedQuizUiChromeRect.id)}
+            className="mt-6 w-full cursor-pointer rounded-lg border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black hover:bg-black/5"
+          >
+            Reset to initial position
+          </button>
         </aside>
       )}
 
@@ -13037,7 +13307,9 @@ export function CreateQuizEditor({
             <div className="flex items-start justify-between gap-2">
               <h1 className="text-lg font-semibold text-black">
                 {showQuizUiSettings
-                  ? "Quiz UI Settings"
+                  ? quizUiScope === "section"
+                    ? "Section Quiz UI Settings"
+                    : "Quiz UI Settings"
                   : showResultsSettings
                     ? "Results Settings"
                     : showSectionSettings
@@ -13069,7 +13341,9 @@ export function CreateQuizEditor({
                   className="shrink-0 cursor-pointer border-none bg-transparent p-0 text-left text-xs font-medium leading-snug text-[#2f5d76] hover:text-[#244a5e]"
                 >
                   {showProjectSettings
-                    ? "Switch To Quiz UI Settings"
+                    ? quizUiScope === "section"
+                      ? "Switch To Section Quiz UI Settings"
+                      : "Switch To Quiz UI Settings"
                     : "Switch To Project Settings"}
                 </button>
               ) : (
@@ -13180,19 +13454,14 @@ export function CreateQuizEditor({
                             className="w-20 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
                           />
                         ) : (
-                          <input
-                            type="number"
+                          <DeferredNumberInput
                             step="any"
                             value={typeof variable.value === "number" ? variable.value : 0}
                             aria-label="Variable value"
-                            onFocus={() => pushHistory()}
-                            onChange={(e) => {
-                              const next =
-                                e.target.value === "" ? 0 : Number(e.target.value);
-                              updateVariable(variable.id, {
-                                value: Number.isFinite(next) ? next : 0,
-                              });
-                            }}
+                            onCheckpoint={pushHistory}
+                            onChange={(next) =>
+                              updateVariable(variable.id, { value: next })
+                            }
                             className="w-16 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
                           />
                         )}
@@ -13277,7 +13546,7 @@ export function CreateQuizEditor({
                 <section className="mt-8">
                   <button
                     type="button"
-                    onClick={openQuizUiView}
+                    onClick={() => openQuizUiView("project")}
                     className="w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-white px-3 py-2 text-sm font-medium text-[#2f5d76] hover:bg-[#2f5d76]/5"
                   >
                     Edit Quiz UI
@@ -13416,19 +13685,14 @@ export function CreateQuizEditor({
                             className="w-20 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
                           />
                         ) : (
-                          <input
-                            type="number"
+                          <DeferredNumberInput
                             step="any"
                             value={typeof variable.value === "number" ? variable.value : 0}
                             aria-label="Local variable value"
-                            onFocus={() => pushHistory()}
-                            onChange={(e) => {
-                              const next =
-                                e.target.value === "" ? 0 : Number(e.target.value);
-                              updateLocalVariable(variable.id, {
-                                value: Number.isFinite(next) ? next : 0,
-                              });
-                            }}
+                            onCheckpoint={pushHistory}
+                            onChange={(next) =>
+                              updateLocalVariable(variable.id, { value: next })
+                            }
                             className="w-16 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
                           />
                         )}
@@ -13485,6 +13749,31 @@ export function CreateQuizEditor({
                     onUpdateEffect={updateLocalDefaultEffect}
                     onRemoveEffect={removeLocalDefaultEffect}
                   />
+                </section>
+
+                <section className="mt-8">
+                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                    Local Quiz UI
+                  </h2>
+                  <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-black">
+                    <input
+                      type="checkbox"
+                      checked={localQuizUi !== null}
+                      aria-label="Use local quiz UI"
+                      onChange={(e) => toggleLocalQuizUi(e.target.checked)}
+                      className="h-4 w-4 cursor-pointer"
+                    />
+                    Use local quiz UI
+                  </label>
+                  {localQuizUi ? (
+                    <button
+                      type="button"
+                      onClick={() => openQuizUiView("section")}
+                      className="mt-3 w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-white px-3 py-2 text-sm font-medium text-[#2f5d76] hover:bg-[#2f5d76]/5"
+                    >
+                      Edit Local Quiz UI
+                    </button>
+                  ) : null}
                 </section>
 
                 <section className="mt-10 border-t border-black/10 pt-6">
@@ -13553,7 +13842,7 @@ export function CreateQuizEditor({
           style={{ backgroundColor: quizUiPage.backgroundColor }}
         >
           <div
-            className="relative overflow-x-clip overflow-y-clip"
+            className="relative overflow-x-clip"
             style={{
               minHeight: "100%",
               height: quizPlayPageHeight * quizPlayFit.scale,
@@ -13587,7 +13876,7 @@ export function CreateQuizEditor({
               {quizQuestionBox.question?.trim() || "\u00a0"}
             </div>
 
-            {quizUiAnswerRects(quizUiPage, quizAnswers.length).map((rect, index) => {
+            {quizPlayLayout.answers.map((rect, index) => {
               const answer = quizAnswers[index];
               if (!answer) return null;
               const selected = quizSelectedAnswerId === answer.id;
@@ -13621,11 +13910,11 @@ export function CreateQuizEditor({
                 onClick={quizGoNext}
                 className="absolute cursor-pointer overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm hover:brightness-90"
                 style={{
-                  left: quizUiPage.nextButton.x,
-                  top: quizUiPage.nextButton.y,
-                  width: quizUiPage.nextButton.width,
-                  height: quizUiPage.nextButton.height,
-                  ...quizUiButtonPaint(quizUiPage.nextButton, "next"),
+                  left: quizPlayLayout.nextButton.x,
+                  top: quizPlayLayout.nextButton.y,
+                  width: quizPlayLayout.nextButton.width,
+                  height: quizPlayLayout.nextButton.height,
+                  ...quizUiButtonPaint(quizPlayLayout.nextButton, "next"),
                 }}
               >
                 Next
@@ -13638,11 +13927,11 @@ export function CreateQuizEditor({
               disabled={!quizCanGoBack}
               className="absolute overflow-hidden rounded-xl border border-black/15 px-4 py-3 text-center font-medium shadow-sm hover:brightness-90 disabled:cursor-not-allowed disabled:opacity-40"
               style={{
-                left: quizUiPage.backButton.x,
-                top: quizUiPage.backButton.y,
-                width: quizUiPage.backButton.width,
-                height: quizUiPage.backButton.height,
-                ...quizUiButtonPaint(quizUiPage.backButton, "back"),
+                left: quizPlayLayout.backButton.x,
+                top: quizPlayLayout.backButton.y,
+                width: quizPlayLayout.backButton.width,
+                height: quizPlayLayout.backButton.height,
+                ...quizUiButtonPaint(quizPlayLayout.backButton, "back"),
               }}
             >
               Back

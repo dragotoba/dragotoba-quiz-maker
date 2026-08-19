@@ -42,14 +42,19 @@ export default function Index() {
   return (
     <main className="qh-page relative flex min-h-screen w-full flex-col overflow-hidden font-[Poppins,sans-serif]">
       <div className="absolute top-6 right-8 z-[5] flex items-center gap-3">
-        <span className="text-sm font-semibold tracking-[0.02em] text-[#33302b]">
-          A Product Of Dragotoba Studios
-        </span>
-        <img
-          src={dragotobaLogo}
-          alt="Dragotoba Studios"
-          className="h-12 w-12 object-contain"
-        />
+        <a
+          href="https://dragotoba.com"
+          className="flex items-center gap-3 text-inherit no-underline hover:opacity-80"
+        >
+          <span className="text-sm font-semibold tracking-[0.02em] text-[#33302b]">
+            A Product Of Dragotoba Studios
+          </span>
+          <img
+            src={dragotobaLogo}
+            alt="Dragotoba Studios"
+            className="h-12 w-12 object-contain"
+          />
+        </a>
         <AccountButton />
       </div>
 
