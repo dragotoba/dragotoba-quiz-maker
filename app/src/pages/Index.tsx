@@ -94,13 +94,12 @@ export default function Index() {
                 })}
               </div>
               <div className="absolute inset-0 flex items-center justify-center">
-                <button
-                  type="button"
-                  onClick={() => navigate("/dashboard")}
-                  className="cursor-pointer rounded-full border-none bg-[#2f5d76] px-10 py-5 font-[Poppins,sans-serif] text-[19px] font-bold tracking-[0.01em] text-[#f8fafc] shadow-[0_6px_18px_rgba(0,0,0,0.15)]"
+                <a
+                  href="https://quiz.dragotoba.com"
+                  className="cursor-pointer rounded-full border-none bg-[#2f5d76] px-10 py-5 font-[Poppins,sans-serif] text-[19px] font-bold tracking-[0.01em] text-[#f8fafc] shadow-[0_6px_18px_rgba(0,0,0,0.15)] inline-block text-center no-underline hover:bg-[#244a5e]"
                 >
                   Create Your Quiz
-                </button>
+                </a>
               </div>
             </div>
 
