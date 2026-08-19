@@ -89,6 +89,7 @@ function emptySection(existingNames: string[] = []) {
     localVariables: [],
     localDefaultAnswers: [],
     localDefaultQuestionColor: null,
+    localQuizUi: null,
     boxes: [
       {
         id: crypto.randomUUID(),
@@ -147,6 +148,7 @@ function migrateFlatToSections(data: Record<string, unknown>) {
     localVariables: data.localVariables ?? [],
     localDefaultAnswers: data.localDefaultAnswers ?? [],
     localDefaultQuestionColor: data.localDefaultQuestionColor ?? null,
+    localQuizUi: data.localQuizUi ?? null,
     boxes: data.boxes ?? [],
     transitions: data.transitions ?? [],
     camera: data.camera ?? { x: 0, y: 0, scale: 1 },
