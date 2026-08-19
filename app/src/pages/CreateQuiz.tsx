@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, ty
 import { createPortal } from "react-dom";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
+  evaluateConditions,
   findQuestionBox,
   startQuiz,
   submitAnswer,
@@ -29,6 +30,7 @@ type QuestionBox = {
   kind: "question";
   question: string;
   answers: AnswerOption[];
+  color: string;
 };
 
 type TransitionBlock = {
@@ -98,6 +100,8 @@ type AnswerOption = {
   id: string;
   name: string;
   effects: AnswerEffect[];
+  color: string;
+  textColor: string;
 };
 
 type EffectOperation = "set" | "add" | "subtract" | "multiply" | "divide";
@@ -477,10 +481,30 @@ type ContextMenuState =
       screenY: number;
       imageId: string;
     }
+  | {
+      kind: "quiz-ui-canvas";
+      screenX: number;
+      screenY: number;
+      contentX: number;
+      contentY: number;
+    }
+  | {
+      kind: "quiz-ui-text";
+      screenX: number;
+      screenY: number;
+      textId: string;
+    }
+  | {
+      kind: "quiz-ui-image";
+      screenX: number;
+      screenY: number;
+      imageId: string;
+    }
   | null;
 
 const DUPLICATE_OFFSET = 28;
 const RESULTS_VIEW_ID = "__results__";
+const QUIZ_UI_VIEW_ID = "__quiz_ui__";
 const RESULTS_TEXT_DEFAULT_WIDTH = 280;
 const RESULTS_TEXT_DEFAULT_HEIGHT = 120;
 const RESULTS_TEXT_MIN_WIDTH = 120;
@@ -550,21 +574,62 @@ const RESULTS_SIDEBAR_EDITOR_MAX_HEIGHT = 240;
 const RESULTS_FONT_SIZE_DEFAULT = 14;
 const RESULTS_FONT_SIZE_MIN = 1;
 const RESULTS_FONT_SIZE_MAX = 128;
+const RESULTS_TEXT_COLOR_DEFAULT = "#000000";
 const RESULTS_PAGE_BOTTOM_PAD = 320;
 const RESULTS_GRID_TICKS_DEFAULT = 16;
 const RESULTS_GRID_TICKS_MIN = 1;
 const RESULTS_GRID_TICKS_MAX = 256;
+const RESULTS_BACKGROUND_DEFAULT = "#ffffff";
+const QUESTION_BOX_COLOR_DEFAULT = "#e6e6e6";
+const ANSWER_BOX_COLOR_DEFAULT = "#9a9a9a";
+const ANSWER_TEXT_COLOR_DEFAULT = "#ffffff";
+const QUIZ_UI_BACKGROUND_DEFAULT = "#f3f3f3";
+const QUIZ_UI_QUESTION_FONT_SIZE = 20;
+const QUIZ_UI_ANSWER_FONT_SIZE = 16;
+const QUIZ_UI_BUTTON_FONT_SIZE = 16;
+const QUIZ_UI_NEXT_BACKGROUND = "#2f5d76";
+const QUIZ_UI_NEXT_TEXT = "#ffffff";
+const QUIZ_UI_BACK_BACKGROUND = "#ececec";
+const QUIZ_UI_BACK_TEXT = "#555555";
+const QUIZ_UI_QUESTION_ID = "quiz-ui-question";
+const QUIZ_UI_NEXT_ID = "quiz-ui-next";
+const QUIZ_UI_BACK_ID = "quiz-ui-back";
+const QUIZ_UI_ANSWER_ID_PREFIX = "quiz-ui-answer-";
+const QUIZ_UI_QUESTION_MIN_WIDTH = 160;
+const QUIZ_UI_QUESTION_MIN_HEIGHT = 64;
+const QUIZ_UI_ANSWER_MIN_WIDTH = 120;
+const QUIZ_UI_ANSWER_MIN_HEIGHT = 36;
+const QUIZ_UI_QUESTION_MAX_HEIGHT = 600;
+const QUIZ_UI_ANSWER_MAX_HEIGHT = 240;
 const SIDEBAR_WIDTH = 320;
 
 type ResultsResizeHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
-type ResultsItemKind = "text" | "axis" | "compass" | "bar" | "image" | "text-image";
+type ResultsItemKind =
+  | "text"
+  | "axis"
+  | "compass"
+  | "bar"
+  | "image"
+  | "text-image"
+  | "quiz-ui";
+
+type QuizUiItemKind = "question" | "answer" | "next" | "back" | "text" | "image" | "text-image";
+
+type LayoutDragItem = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 
 type DragState = {
-  type: "pan" | "box" | "results-text" | "results-resize";
+  type: "pan" | "box" | "results-text" | "results-resize" | "layout-marquee";
   pointerId: number;
   boxId?: string;
   resultsItemKind?: ResultsItemKind;
+  quizUiItemKind?: QuizUiItemKind;
   lastX: number;
   lastY: number;
   startX: number;
@@ -576,6 +641,8 @@ type DragState = {
   originWidth?: number;
   originHeight?: number;
   resizeCursor?: string;
+  groupItems?: LayoutDragItem[];
+  layoutTarget?: "results" | "quiz-ui";
 };
 
 /** Width : height = 3 : 1 (1×3 card). */
@@ -1369,6 +1436,8 @@ function createDefaultAnswer(): AnswerOption {
     id: crypto.randomUUID(),
     name: "Ans1",
     effects: [],
+    color: ANSWER_BOX_COLOR_DEFAULT,
+    textColor: ANSWER_TEXT_COLOR_DEFAULT,
   };
 }
 
@@ -1425,6 +1494,24 @@ function createDefaultCondition(
     value: 0,
     join,
   };
+}
+
+function normalizeConditions(raw: unknown): TransitionCondition[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+    .map((c) => ({
+      id: typeof c.id === "string" ? c.id : crypto.randomUUID(),
+      variableId: typeof c.variableId === "string" ? c.variableId : "",
+      operator: (typeof c.operator === "string" ? c.operator : "eq") as ConditionOperator,
+      value:
+        typeof c.value === "string"
+          ? c.value
+          : typeof c.value === "number" && Number.isFinite(c.value)
+            ? c.value
+            : 0,
+      join: c.join === "or" ? ("or" as const) : ("and" as const),
+    }));
 }
 
 type ConditionsEditorProps = {
@@ -1830,6 +1917,25 @@ function AnswersEditor({
                 onFocus={onCheckpoint}
                 onChange={(e) => onUpdateAnswer(answer.id, { name: e.target.value })}
                 className="min-w-0 flex-1 border-none bg-transparent px-1 py-0.5 text-sm text-black outline-none"
+              />
+              <ResultsColorPicker
+                compact
+                variant="fill"
+                label="Button color"
+                value={normalizeStoredColor(answer.color, ANSWER_BOX_COLOR_DEFAULT)}
+                onCheckpoint={onCheckpoint}
+                onChange={(color) => onUpdateAnswer(answer.id, { color })}
+              />
+              <ResultsColorPicker
+                compact
+                variant="text"
+                label="Text color"
+                value={normalizeStoredColor(
+                  answer.textColor,
+                  ANSWER_TEXT_COLOR_DEFAULT,
+                )}
+                onCheckpoint={onCheckpoint}
+                onChange={(textColor) => onUpdateAnswer(answer.id, { textColor })}
               />
               <button
                 type="button"
@@ -2718,11 +2824,15 @@ function ResultsColorPicker({
   value,
   onCheckpoint,
   onChange,
+  compact = false,
+  variant = "fill",
 }: {
   label: string;
   value: string;
   onCheckpoint: () => void;
   onChange: (color: string) => void;
+  compact?: boolean;
+  variant?: "fill" | "text";
 }) {
   const [hexDraft, setHexDraft] = useState(value);
   const [wheelOpen, setWheelOpen] = useState(false);
@@ -2740,7 +2850,9 @@ function ResultsColorPicker({
       const rect = buttonRef.current?.getBoundingClientRect();
       if (!rect) return;
       const menuW = COLOR_WHEEL_SIZE + 24;
-      const menuH = COLOR_WHEEL_SIZE + 24;
+      const presetRows = Math.ceil(RESULTS_PRESET_COLORS.length / 8);
+      const hexRow = compact ? 52 : 0;
+      const menuH = COLOR_WHEEL_SIZE + 24 + presetRows * 30 + 20 + hexRow;
       let left = rect.right + 8;
       let top = rect.top;
       if (left + menuW > window.innerWidth - 8) left = rect.left - menuW - 8;
@@ -2773,7 +2885,7 @@ function ResultsColorPicker({
       window.removeEventListener("resize", placeMenu);
       window.removeEventListener("scroll", placeMenu, true);
     };
-  }, [wheelOpen]);
+  }, [wheelOpen, compact]);
 
   function commitHex(raw: string) {
     const next = parseHexColor(raw) ?? value;
@@ -2781,63 +2893,124 @@ function ResultsColorPicker({
     if (next !== value) onChange(next);
   }
 
+  const hexInput = (
+    <input
+      aria-label={`${label} hex`}
+      value={hexDraft}
+      spellCheck={false}
+      placeholder="#rrggbb"
+      onFocus={() => onCheckpoint()}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setHexDraft(raw);
+        const parsed = parseHexColor(raw, false);
+        if (parsed && parsed !== value) onChange(parsed);
+      }}
+      onBlur={() => commitHex(hexDraft)}
+      className={`w-full rounded-lg border border-black/15 bg-white font-mono text-sm text-black outline-none focus:border-[#2f5d76] ${
+        compact ? "px-2 py-1.5" : "px-3 py-2"
+      }`}
+    />
+  );
+
+  function toggleMenu() {
+    onCheckpoint();
+    setWheelOpen((open) => !open);
+  }
+
+  const menu = wheelOpen
+    ? createPortal(
+        <div
+          ref={menuRef}
+          role="dialog"
+          aria-label={`${label} color menu`}
+          className="fixed z-50 rounded-md border border-black/15 bg-white p-3 shadow-[0_8px_24px_rgba(0,0,0,0.12)]"
+          style={{
+            top: wheelPos.top,
+            left: wheelPos.left,
+            width: COLOR_WHEEL_SIZE + 24,
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div className="grid grid-cols-8 gap-1.5">
+            {RESULTS_PRESET_COLORS.map((color) => {
+              const selected = value.toLowerCase() === color;
+              return (
+                <button
+                  key={color}
+                  type="button"
+                  title={color}
+                  aria-label={`${label} ${color}`}
+                  aria-pressed={selected}
+                  onClick={() => onChange(color)}
+                  className={`aspect-square w-full cursor-pointer rounded-md border border-black/20 ${
+                    selected ? "ring-2 ring-[#2f5d76] ring-offset-1" : ""
+                  }`}
+                  style={{ backgroundColor: color }}
+                />
+              );
+            })}
+          </div>
+          {compact && <div className="mt-3">{hexInput}</div>}
+          <div className="mt-3">
+            <ResultsColorWheel value={value} onChange={onChange} />
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
+
+  if (compact) {
+    return (
+      <>
+        <button
+          ref={buttonRef}
+          type="button"
+          title={label}
+          aria-label={`Open ${label} color menu`}
+          aria-haspopup="dialog"
+          aria-expanded={wheelOpen}
+          onClick={toggleMenu}
+          className={
+            variant === "text"
+              ? "flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-[#c8c8c8] hover:bg-[#bcbcbc]"
+              : "h-7 w-7 shrink-0 cursor-pointer rounded-md border border-black/20"
+          }
+          style={variant === "fill" ? { backgroundColor: value } : undefined}
+        >
+          {variant === "text" ? (
+            <span
+              className="text-sm font-bold leading-none"
+              style={{ color: value }}
+              aria-hidden
+            >
+              A
+            </span>
+          ) : null}
+        </button>
+        {menu}
+      </>
+    );
+  }
+
   return (
     <div className="mt-3">
       <div className="text-sm text-black/70">{label}</div>
-      <div className="mt-1.5 grid grid-cols-8 gap-1.5">
-        {RESULTS_PRESET_COLORS.map((color) => {
-          const selected = value.toLowerCase() === color;
-          return (
-            <button
-              key={color}
-              type="button"
-              title={color}
-              aria-label={`${label} ${color}`}
-              aria-pressed={selected}
-              onClick={() => {
-                onCheckpoint();
-                onChange(color);
-              }}
-              className={`aspect-square w-full cursor-pointer rounded-md border border-black/20 ${
-                selected ? "ring-2 ring-[#2f5d76] ring-offset-1" : ""
-              }`}
-              style={{ backgroundColor: color }}
-            />
-          );
-        })}
-      </div>
-      <div className="mt-2 flex items-center gap-2">
+      <div className="mt-1.5 flex items-center gap-2">
         <span
           className="h-9 w-9 shrink-0 rounded-md border border-black/20"
           style={{ backgroundColor: value }}
           aria-hidden
         />
-        <input
-          aria-label={`${label} hex`}
-          value={hexDraft}
-          spellCheck={false}
-          placeholder="#rrggbb"
-          onFocus={() => onCheckpoint()}
-          onChange={(e) => {
-            const raw = e.target.value;
-            setHexDraft(raw);
-            const parsed = parseHexColor(raw, false);
-            if (parsed && parsed !== value) onChange(parsed);
-          }}
-          onBlur={() => commitHex(hexDraft)}
-          className="w-full rounded-lg border border-black/15 bg-white px-3 py-2 font-mono text-sm text-black outline-none focus:border-[#2f5d76]"
-        />
+        {hexInput}
         <button
           ref={buttonRef}
           type="button"
           title="Color wheel"
-          aria-label={`Open ${label} color wheel`}
+          aria-label={`Open ${label} color menu`}
           aria-haspopup="dialog"
           aria-expanded={wheelOpen}
-          onClick={() => {
-            onCheckpoint();
-            setWheelOpen((open) => !open);
-          }}
+          onClick={toggleMenu}
           className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-black/15 bg-white hover:bg-black/5"
         >
           <span
@@ -2849,20 +3022,236 @@ function ResultsColorPicker({
           />
         </button>
       </div>
-      {wheelOpen &&
-        createPortal(
+      {menu}
+    </div>
+  );
+}
+
+function LayoutPageSettings({
+  backgroundColor,
+  gridVisible,
+  horizontalTicks,
+  verticalTicks,
+  onCheckpoint,
+  onPatch,
+  onShowPreview,
+}: {
+  backgroundColor: string;
+  gridVisible: boolean;
+  horizontalTicks: number;
+  verticalTicks: number;
+  onCheckpoint: () => void;
+  onPatch: (
+    patch: Partial<
+      Pick<
+        ResultsDocument,
+        "backgroundColor" | "gridVisible" | "horizontalTicks" | "verticalTicks"
+      >
+    >,
+  ) => void;
+  onShowPreview: () => void;
+}) {
+  return (
+    <>
+      <section className="mt-6">
+        <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+          Background
+        </h2>
+        <ResultsColorPicker
+          label="Color"
+          value={backgroundColor}
+          onCheckpoint={onCheckpoint}
+          onChange={(color) => onPatch({ backgroundColor: color })}
+        />
+      </section>
+
+      <section className="mt-8">
+        <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+          Grid
+        </h2>
+        <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-black">
+          <input
+            type="checkbox"
+            checked={gridVisible}
+            aria-label="Show grid"
+            onChange={(e) => {
+              onCheckpoint();
+              onPatch({ gridVisible: e.target.checked });
+            }}
+            className="h-4 w-4 cursor-pointer"
+          />
+          Show grid
+        </label>
+
+        <label className="mt-4 block text-sm text-black">
+          <span className="text-black/70">Horizontal ticks</span>
+          <input
+            type="number"
+            min={RESULTS_GRID_TICKS_MIN}
+            max={RESULTS_GRID_TICKS_MAX}
+            step={1}
+            value={horizontalTicks}
+            aria-label="Horizontal grid ticks"
+            onFocus={() => onCheckpoint()}
+            onChange={(e) => {
+              const next =
+                e.target.value === ""
+                  ? RESULTS_GRID_TICKS_MIN
+                  : Number(e.target.value);
+              onPatch({
+                horizontalTicks: Number.isFinite(next) ? next : horizontalTicks,
+              });
+            }}
+            onBlur={() =>
+              onPatch({
+                horizontalTicks: normalizeGridTicks(horizontalTicks),
+              })
+            }
+            className="mt-1.5 w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
+          />
+        </label>
+
+        <label className="mt-4 block text-sm text-black">
+          <span className="text-black/70">Vertical ticks</span>
+          <input
+            type="number"
+            min={RESULTS_GRID_TICKS_MIN}
+            max={RESULTS_GRID_TICKS_MAX}
+            step={1}
+            value={verticalTicks}
+            aria-label="Vertical grid ticks"
+            onFocus={() => onCheckpoint()}
+            onChange={(e) => {
+              const next =
+                e.target.value === ""
+                  ? RESULTS_GRID_TICKS_MIN
+                  : Number(e.target.value);
+              onPatch({
+                verticalTicks: Number.isFinite(next) ? next : verticalTicks,
+              });
+            }}
+            onBlur={() =>
+              onPatch({
+                verticalTicks: normalizeGridTicks(verticalTicks),
+              })
+            }
+            className="mt-1.5 w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
+          />
+        </label>
+        <p className="mt-2 text-xs text-black/50">
+          1–{RESULTS_GRID_TICKS_MAX} ticks. Hold Ctrl while dragging or resizing
+          to snap.
+        </p>
+      </section>
+
+      <section className="mt-8">
+        <button
+          type="button"
+          onClick={onShowPreview}
+          className="w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-[#2f5d76] px-3 py-2 text-sm font-medium text-white hover:bg-[#244a5e]"
+        >
+          Show Preview
+        </button>
+      </section>
+    </>
+  );
+}
+
+function QuizUiEditorItem({
+  rect,
+  selected,
+  preview,
+  className,
+  style,
+  children,
+  onPointerDown,
+  onResizePointerDown,
+}: {
+  rect: QuizUiRect;
+  selected: boolean;
+  preview: boolean;
+  className: string;
+  style?: CSSProperties;
+  children: ReactNode;
+  onPointerDown?: (e: React.PointerEvent<HTMLElement>) => void;
+  onResizePointerDown?: (
+    e: React.PointerEvent<HTMLElement>,
+    handle: ResultsResizeHandle,
+  ) => void;
+}) {
+  return (
+    <div
+      data-quiz-ui-item
+      className={`absolute ${preview ? "" : "cursor-move"} ${className} ${
+        selected && !preview
+          ? "ring-2 ring-[#2f5d76] ring-offset-2 ring-offset-transparent"
+          : ""
+      }`}
+      style={{
+        left: rect.x,
+        top: rect.y,
+        width: rect.width,
+        height: rect.height,
+        ...style,
+      }}
+      onPointerDown={preview ? undefined : onPointerDown}
+      onContextMenu={
+        preview
+          ? undefined
+          : (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+      }
+    >
+      {children}
+      {selected &&
+        !preview &&
+        onResizePointerDown &&
+        RESULTS_RESIZE_HANDLES.map(({ handle, className: handleClass, cursor }) => (
           <div
-            ref={menuRef}
-            role="dialog"
-            aria-label={`${label} color wheel`}
-            className="fixed z-50 rounded-md border border-black/15 bg-white p-3 shadow-[0_8px_24px_rgba(0,0,0,0.12)]"
-            style={{ top: wheelPos.top, left: wheelPos.left }}
-            onPointerDown={(e) => e.stopPropagation()}
-          >
-            <ResultsColorWheel value={value} onChange={onChange} />
-          </div>,
-          document.body,
-        )}
+            key={handle}
+            data-results-resize={handle}
+            className={`absolute z-10 ${handleClass}`}
+            style={{ cursor }}
+            onPointerDown={(e) => onResizePointerDown(e, handle)}
+          />
+        ))}
+    </div>
+  );
+}
+
+function LayoutGroupOverlay({
+  bounds,
+  onResizePointerDown,
+}: {
+  bounds: { x: number; y: number; width: number; height: number };
+  onResizePointerDown: (
+    e: React.PointerEvent<HTMLElement>,
+    handle: ResultsResizeHandle,
+  ) => void;
+}) {
+  if (bounds.width <= 0 || bounds.height <= 0) return null;
+  return (
+    <div
+      data-layout-group
+      className="pointer-events-none absolute z-20 border-2 border-dashed border-[#2f5d76]"
+      style={{
+        left: bounds.x,
+        top: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+      }}
+    >
+      {RESULTS_RESIZE_HANDLES.map(({ handle, className, cursor }) => (
+        <div
+          key={handle}
+          data-results-resize={handle}
+          className={`pointer-events-auto absolute z-10 ${className}`}
+          style={{ cursor }}
+          onPointerDown={(e) => onResizePointerDown(e, handle)}
+        />
+      ))}
     </div>
   );
 }
@@ -2951,6 +3340,7 @@ function ResultsRichTextEditor({
   autoHeight = false,
   growFromEnd = true,
   fontSize = RESULTS_FONT_SIZE_DEFAULT,
+  color = RESULTS_TEXT_COLOR_DEFAULT,
 }: {
   segments: ResultsTextSegment[];
   variables: ProjectVariable[];
@@ -2962,6 +3352,7 @@ function ResultsRichTextEditor({
   autoHeight?: boolean;
   growFromEnd?: boolean;
   fontSize?: number;
+  color?: string;
 }) {
   const dragFromRef = useRef<number | null>(null);
   const dropTargetRef = useRef<{
@@ -3127,9 +3518,11 @@ function ResultsRichTextEditor({
     ? "overflow-x-hidden overflow-y-visible"
     : "overflow-x-hidden overflow-y-auto";
   const resolvedFontSize = normalizeResultsFontSize(fontSize);
+  const resolvedColor = normalizeStoredColor(color, RESULTS_TEXT_COLOR_DEFAULT);
   const textStyle = {
     fontSize: `${resolvedFontSize}px`,
     lineHeight: 1.375,
+    color: resolvedColor,
   } as const;
   const chipFontSize = Math.max(
     RESULTS_FONT_SIZE_MIN,
@@ -3151,7 +3544,7 @@ function ResultsRichTextEditor({
             segment.kind === "text" ? (
               <span
                 key={segment.id}
-                className={`inline whitespace-pre-wrap break-words align-baseline text-black ${
+                className={`inline whitespace-pre-wrap break-words align-baseline ${
                   compact ? "py-0.5" : "py-1"
                 }`}
                 style={textStyle}
@@ -3161,7 +3554,7 @@ function ResultsRichTextEditor({
             ) : (
               <span
                 key={segment.id}
-                className={`inline whitespace-pre-wrap break-words align-baseline text-black ${
+                className={`inline whitespace-pre-wrap break-words align-baseline ${
                   compact ? "py-0.5" : "py-1"
                 }`}
                 style={textStyle}
@@ -3300,7 +3693,7 @@ function ResultsRichTextEditor({
                 );
                 finishDrag({ segmentIndex: index, offset });
               }}
-              className={`inline whitespace-pre-wrap break-words align-baseline text-black outline-none empty:inline-block empty:min-w-[3ch] ${
+              className={`inline whitespace-pre-wrap break-words align-baseline outline-none empty:inline-block empty:min-w-[3ch] ${
                 compact ? "py-0.5" : "py-1"
               }`}
               style={textStyle}
@@ -3509,6 +3902,7 @@ type QuizSection = {
   name: string;
   localVariables: ProjectVariable[];
   localDefaultAnswers: AnswerOption[];
+  localDefaultQuestionColor: string | null;
   boxes: CanvasBox[];
   transitions: Transition[];
   camera: Camera;
@@ -3528,6 +3922,7 @@ type ResultsTextBox = {
   height: number;
   segments: ResultsTextSegment[];
   fontSize: number;
+  textColor: string;
   textAlign: ResultsTextAlign;
   showImage: boolean;
   image: string;
@@ -3549,6 +3944,9 @@ type ResultsAxis = {
   centerFontSize: number;
   leftFontSize: number;
   rightFontSize: number;
+  centerTextColor: string;
+  leftTextColor: string;
+  rightTextColor: string;
   percentageVariableId: string;
   leftColor: string;
   rightColor: string;
@@ -3571,6 +3969,10 @@ type ResultsCompass = {
   bottomFontSize: number;
   leftFontSize: number;
   rightFontSize: number;
+  topTextColor: string;
+  bottomTextColor: string;
+  leftTextColor: string;
+  rightTextColor: string;
   xVariableId: string;
   yVariableId: string;
   topLeftColor: string;
@@ -3587,12 +3989,19 @@ type ResultsBar = {
   height: number;
   segments: ResultsTextSegment[];
   fontSize: number;
+  textColor: string;
   variableId: string;
   asPercent: boolean;
   min: number;
   max: number;
   showImage: boolean;
   image: string;
+};
+
+type ResultsImageRule = {
+  id: string;
+  src: string;
+  conditions: TransitionCondition[];
 };
 
 type ResultsImage = {
@@ -3602,6 +4011,8 @@ type ResultsImage = {
   width: number;
   height: number;
   src: string;
+  useFallback: boolean;
+  rules: ResultsImageRule[];
 };
 
 type ResultsDocument = {
@@ -3610,20 +4021,50 @@ type ResultsDocument = {
   compasses: ResultsCompass[];
   bars: ResultsBar[];
   images: ResultsImage[];
+  backgroundColor: string;
   gridVisible: boolean;
   horizontalTicks: number;
   verticalTicks: number;
+};
+
+type QuizUiRect = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  backgroundColor?: string;
+  textColor?: string;
+};
+
+type QuizUiDocument = {
+  customized: boolean;
+  backgroundColor: string;
+  gridVisible: boolean;
+  horizontalTicks: number;
+  verticalTicks: number;
+  question: QuizUiRect;
+  answers: QuizUiRect[];
+  nextButton: QuizUiRect;
+  backButton: QuizUiRect;
+  textBoxes: ResultsTextBox[];
+  images: ResultsImage[];
 };
 
 type EditorSnapshot = {
   projectName: string;
   variables: ProjectVariable[];
   defaultAnswers: AnswerOption[];
+  defaultQuestionColor: string;
+  defaultAnswerColor: string;
+  defaultAnswerTextColor: string;
   sections: QuizSection[];
   activeSectionId: string;
   results: ResultsDocument;
+  quizUi: QuizUiDocument;
   listing: QuizListing;
-  editorView: "section" | "results";
+  editorView: "section" | "results" | "quiz-ui";
   selectedId: string | null;
   selectedTransitionId: string | null;
   selectedResultsTextId: string | null;
@@ -3631,6 +4072,9 @@ type EditorSnapshot = {
   selectedResultsCompassId: string | null;
   selectedResultsBarId: string | null;
   selectedResultsImageId: string | null;
+  selectedResultsIds: string[];
+  selectedQuizUiId: string | null;
+  selectedQuizUiIds: string[];
 };
 
 const MAX_HISTORY = 200;
@@ -3642,9 +4086,13 @@ type PersistedQuiz = {
   updatedAt: number;
   variables: ProjectVariable[];
   defaultAnswers: AnswerOption[];
+  defaultQuestionColor: string;
+  defaultAnswerColor: string;
+  defaultAnswerTextColor: string;
   sections: QuizSection[];
   activeSectionId: string;
   results: ResultsDocument;
+  quizUi: QuizUiDocument;
   listing: QuizListing;
 };
 
@@ -3685,8 +4133,55 @@ function normalizeCanvasBox(raw: unknown): CanvasBox | null {
     y: box.y,
     kind: "question",
     question: typeof box.question === "string" ? box.question : "",
-    answers: Array.isArray(box.answers) ? (box.answers as AnswerOption[]) : [],
+    answers: Array.isArray(box.answers)
+      ? box.answers
+          .map(normalizeAnswer)
+          .filter((answer): answer is AnswerOption => answer !== null)
+      : [],
+    color: normalizeStoredColor(box.color, QUESTION_BOX_COLOR_DEFAULT),
   };
+}
+
+function normalizeAnswer(raw: unknown): AnswerOption | null {
+  if (!raw || typeof raw !== "object") return null;
+  const answer = raw as Record<string, unknown>;
+  if (typeof answer.id !== "string") return null;
+  const color = normalizeStoredColor(answer.color, ANSWER_BOX_COLOR_DEFAULT);
+  return {
+    id: answer.id,
+    name: typeof answer.name === "string" ? answer.name : "",
+    effects: Array.isArray(answer.effects) ? (answer.effects as AnswerEffect[]) : [],
+    color,
+    textColor:
+      parseHexColor(answer.textColor) ?? contrastTextOn(color),
+  };
+}
+
+function normalizeAnswers(raw: unknown): AnswerOption[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map(normalizeAnswer)
+    .filter((answer): answer is AnswerOption => answer !== null);
+}
+
+function questionBoxPaint(color: string | undefined) {
+  const backgroundColor = normalizeStoredColor(color, QUESTION_BOX_COLOR_DEFAULT);
+  return { backgroundColor, color: contrastTextOn(backgroundColor) };
+}
+
+function answerBoxPaint(color: string | undefined, textColor?: string) {
+  const backgroundColor = normalizeStoredColor(color, ANSWER_BOX_COLOR_DEFAULT);
+  return {
+    backgroundColor,
+    color: parseHexColor(textColor) ?? contrastTextOn(backgroundColor),
+  };
+}
+
+function resolvedDefaultQuestionColor(
+  localColor: string | null | undefined,
+  projectColor: string,
+) {
+  return localColor ?? projectColor;
 }
 
 function normalizeTransition(raw: unknown): Transition | null {
@@ -3700,22 +4195,7 @@ function normalizeTransition(raw: unknown): Transition | null {
     return null;
   }
 
-  const conditions = Array.isArray(t.conditions)
-    ? t.conditions
-        .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
-        .map((c) => ({
-          id: typeof c.id === "string" ? c.id : crypto.randomUUID(),
-          variableId: typeof c.variableId === "string" ? c.variableId : "",
-          operator: (typeof c.operator === "string" ? c.operator : "eq") as ConditionOperator,
-          value:
-            typeof c.value === "string"
-              ? c.value
-              : typeof c.value === "number" && Number.isFinite(c.value)
-                ? c.value
-                : 0,
-          join: c.join === "or" ? ("or" as const) : ("and" as const),
-        }))
-    : [];
+  const conditions = normalizeConditions(t.conditions);
 
   return {
     id: t.id,
@@ -3778,9 +4258,8 @@ function normalizeSection(raw: unknown): QuizSection | null {
           .map(normalizeProjectVariable)
           .filter((v): v is ProjectVariable => v !== null)
       : [],
-    localDefaultAnswers: Array.isArray(s.localDefaultAnswers)
-      ? (s.localDefaultAnswers as AnswerOption[])
-      : [],
+    localDefaultAnswers: normalizeAnswers(s.localDefaultAnswers),
+    localDefaultQuestionColor: parseHexColor(s.localDefaultQuestionColor),
     boxes,
     transitions: exclusiveTransitions,
     camera: {
@@ -3796,6 +4275,44 @@ function normalizeSection(raw: unknown): QuizSection | null {
 
 function emptyResultsSegments(): ResultsTextSegment[] {
   return [{ id: crypto.randomUUID(), kind: "text", text: "" }];
+}
+
+function createEmptyResultsTextBox(
+  id: string,
+  x: number,
+  y: number,
+): ResultsTextBox {
+  return {
+    id,
+    x,
+    y,
+    width: RESULTS_TEXT_DEFAULT_WIDTH,
+    height: RESULTS_TEXT_DEFAULT_HEIGHT,
+    segments: emptyResultsSegments(),
+    fontSize: RESULTS_FONT_SIZE_DEFAULT,
+    textColor: RESULTS_TEXT_COLOR_DEFAULT,
+    textAlign: "left",
+    showImage: false,
+    image: "",
+    imageAbove: false,
+    imageWidth: RESULTS_TEXT_IMAGE_DEFAULT_SIZE,
+    imageHeight: RESULTS_TEXT_IMAGE_DEFAULT_SIZE,
+    imageOffsetX: (RESULTS_TEXT_DEFAULT_WIDTH - RESULTS_TEXT_IMAGE_DEFAULT_SIZE) / 2,
+  };
+}
+
+function createEmptyResultsImage(id: string, x: number, y: number): ResultsImage {
+  const size = RESULTS_IMAGE_DEFAULT_SIZE;
+  return {
+    id,
+    x,
+    y,
+    width: size,
+    height: size,
+    src: "",
+    useFallback: true,
+    rules: [],
+  };
 }
 
 function normalizeResultsSegment(raw: unknown): ResultsTextSegment | null {
@@ -3859,6 +4376,7 @@ function normalizeResultsTextBox(raw: unknown): ResultsTextBox | null {
     height,
     segments: normalizeResultsSegments(box.segments, box.text),
     fontSize: normalizeResultsFontSize(box.fontSize),
+    textColor: normalizeStoredColor(box.textColor, RESULTS_TEXT_COLOR_DEFAULT),
     textAlign: normalizeResultsTextAlign(box.textAlign),
     showImage: Boolean(box.showImage),
     image: typeof box.image === "string" ? box.image : "",
@@ -3914,6 +4432,15 @@ function normalizeResultsAxis(raw: unknown): ResultsAxis | null {
     centerFontSize: normalizeResultsFontSize(box.centerFontSize ?? box.fontSize),
     leftFontSize: normalizeResultsFontSize(box.leftFontSize ?? box.fontSize),
     rightFontSize: normalizeResultsFontSize(box.rightFontSize ?? box.fontSize),
+    centerTextColor: normalizeStoredColor(
+      box.centerTextColor,
+      RESULTS_TEXT_COLOR_DEFAULT,
+    ),
+    leftTextColor: normalizeStoredColor(box.leftTextColor, RESULTS_TEXT_COLOR_DEFAULT),
+    rightTextColor: normalizeStoredColor(
+      box.rightTextColor,
+      RESULTS_TEXT_COLOR_DEFAULT,
+    ),
     percentageVariableId:
       typeof box.percentageVariableId === "string" ? box.percentageVariableId : "",
     leftColor: normalizeStoredColor(box.leftColor, RESULTS_AXIS_LEFT_COLOR),
@@ -3951,6 +4478,16 @@ function normalizeResultsCompass(raw: unknown): ResultsCompass | null {
     bottomFontSize: normalizeResultsFontSize(box.bottomFontSize ?? box.fontSize),
     leftFontSize: normalizeResultsFontSize(box.leftFontSize ?? box.fontSize),
     rightFontSize: normalizeResultsFontSize(box.rightFontSize ?? box.fontSize),
+    topTextColor: normalizeStoredColor(box.topTextColor, RESULTS_TEXT_COLOR_DEFAULT),
+    bottomTextColor: normalizeStoredColor(
+      box.bottomTextColor,
+      RESULTS_TEXT_COLOR_DEFAULT,
+    ),
+    leftTextColor: normalizeStoredColor(box.leftTextColor, RESULTS_TEXT_COLOR_DEFAULT),
+    rightTextColor: normalizeStoredColor(
+      box.rightTextColor,
+      RESULTS_TEXT_COLOR_DEFAULT,
+    ),
     xVariableId: typeof box.xVariableId === "string" ? box.xVariableId : "",
     yVariableId: typeof box.yVariableId === "string" ? box.yVariableId : "",
     topLeftColor: normalizeStoredColor(
@@ -3998,6 +4535,7 @@ function normalizeResultsBar(raw: unknown): ResultsBar | null {
     height,
     segments: normalizeResultsSegments(box.segments, undefined),
     fontSize: normalizeResultsFontSize(box.fontSize),
+    textColor: normalizeStoredColor(box.textColor, RESULTS_TEXT_COLOR_DEFAULT),
     variableId: typeof box.variableId === "string" ? box.variableId : "",
     asPercent: Boolean(box.asPercent),
     min: normalizeBarBound(box.min, 0),
@@ -4007,20 +4545,55 @@ function normalizeResultsBar(raw: unknown): ResultsBar | null {
   };
 }
 
+function normalizeResultsImageRule(raw: unknown): ResultsImageRule | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rule = raw as Record<string, unknown>;
+  return {
+    id: typeof rule.id === "string" ? rule.id : crypto.randomUUID(),
+    src: typeof rule.src === "string" ? rule.src : "",
+    conditions: normalizeConditions(rule.conditions),
+  };
+}
+
 function normalizeResultsImage(raw: unknown): ResultsImage | null {
   if (!raw || typeof raw !== "object") return null;
   const box = raw as Record<string, unknown>;
   if (typeof box.id !== "string") return null;
   const x = typeof box.x === "number" && Number.isFinite(box.x) ? box.x : 0;
   const y = typeof box.y === "number" && Number.isFinite(box.y) ? Math.max(0, box.y) : 0;
+  const src = typeof box.src === "string" ? box.src : "";
+  const rules = Array.isArray(box.rules)
+    ? box.rules
+        .map(normalizeResultsImageRule)
+        .filter((rule): rule is ResultsImageRule => rule !== null)
+    : [];
   return {
     id: box.id,
     x,
     y,
     width: normalizeResultsImageDim(box.width, RESULTS_IMAGE_DEFAULT_SIZE),
     height: normalizeResultsImageDim(box.height, RESULTS_IMAGE_DEFAULT_SIZE),
-    src: typeof box.src === "string" ? box.src : "",
+    src,
+    useFallback: typeof box.useFallback === "boolean" ? box.useFallback : Boolean(src),
+    rules,
   };
+}
+
+function resolveResultsImageSrc(
+  image: ResultsImage,
+  project: ProjectVariable[],
+  local: ProjectVariable[],
+): string {
+  for (const rule of image.rules) {
+    if (evaluateConditions(rule.conditions, project, local)) return rule.src;
+  }
+  return image.useFallback ? image.src : "";
+}
+
+function resultsImageEditorSrc(image: ResultsImage): string {
+  if (image.useFallback && image.src) return image.src;
+  const first = image.rules.find((rule) => rule.src);
+  return first?.src || image.src;
 }
 
 function emptyResultsDocument(): ResultsDocument {
@@ -4030,6 +4603,7 @@ function emptyResultsDocument(): ResultsDocument {
     compasses: [],
     bars: [],
     images: [],
+    backgroundColor: RESULTS_BACKGROUND_DEFAULT,
     gridVisible: false,
     horizontalTicks: RESULTS_GRID_TICKS_DEFAULT,
     verticalTicks: RESULTS_GRID_TICKS_DEFAULT,
@@ -4070,10 +4644,431 @@ function normalizeResults(raw: unknown): ResultsDocument {
     compasses,
     bars,
     images,
+    backgroundColor: normalizeStoredColor(
+      data.backgroundColor,
+      RESULTS_BACKGROUND_DEFAULT,
+    ),
     gridVisible: Boolean(data.gridVisible),
     horizontalTicks: normalizeGridTicks(data.horizontalTicks),
     verticalTicks: normalizeGridTicks(data.verticalTicks),
   };
+}
+
+function quizUiAnswerId(index: number) {
+  return `${QUIZ_UI_ANSWER_ID_PREFIX}${index}`;
+}
+
+function emptyQuizUiDocument(pageWidth = 1280, pageHeight = 800): QuizUiDocument {
+  const width = Math.max(320, pageWidth);
+  const height = Math.max(480, pageHeight);
+  const contentWidth = Math.max(200, Math.min(576, width) - 32);
+  const left = Math.round((width - contentWidth) / 2);
+  const questionH = 112;
+  const answerH = 48;
+  const buttonH = 48;
+  const gapAnswers = 12;
+  const gapAfterQuestion = 24;
+  const gapBeforeNext = 24;
+  const gapBeforeBack = 16;
+  const answerCount = 2;
+  const stackH =
+    questionH +
+    gapAfterQuestion +
+    answerCount * answerH +
+    (answerCount - 1) * gapAnswers +
+    gapBeforeNext +
+    buttonH +
+    gapBeforeBack +
+    buttonH;
+  let y = Math.max(80, Math.round((height - stackH) / 2));
+  const question: QuizUiRect = {
+    id: QUIZ_UI_QUESTION_ID,
+    x: left,
+    y,
+    width: contentWidth,
+    height: questionH,
+    fontSize: QUIZ_UI_QUESTION_FONT_SIZE,
+  };
+  y += questionH + gapAfterQuestion;
+  const answers: QuizUiRect[] = [];
+  for (let i = 0; i < answerCount; i += 1) {
+    answers.push({
+      id: quizUiAnswerId(i),
+      x: left,
+      y,
+      width: contentWidth,
+      height: answerH,
+      fontSize: QUIZ_UI_ANSWER_FONT_SIZE,
+    });
+    y += answerH + (i < answerCount - 1 ? gapAnswers : 0);
+  }
+  y += gapBeforeNext;
+  const nextButton: QuizUiRect = {
+    id: QUIZ_UI_NEXT_ID,
+    x: left,
+    y,
+    width: contentWidth,
+    height: buttonH,
+    fontSize: QUIZ_UI_BUTTON_FONT_SIZE,
+    backgroundColor: QUIZ_UI_NEXT_BACKGROUND,
+    textColor: QUIZ_UI_NEXT_TEXT,
+  };
+  y += buttonH + gapBeforeBack;
+  const backButton: QuizUiRect = {
+    id: QUIZ_UI_BACK_ID,
+    x: left,
+    y,
+    width: contentWidth,
+    height: buttonH,
+    fontSize: QUIZ_UI_BUTTON_FONT_SIZE,
+    backgroundColor: QUIZ_UI_BACK_BACKGROUND,
+    textColor: QUIZ_UI_BACK_TEXT,
+  };
+  return {
+    customized: false,
+    backgroundColor: QUIZ_UI_BACKGROUND_DEFAULT,
+    gridVisible: false,
+    horizontalTicks: RESULTS_GRID_TICKS_DEFAULT,
+    verticalTicks: RESULTS_GRID_TICKS_DEFAULT,
+    question,
+    answers,
+    nextButton,
+    backButton,
+    textBoxes: [],
+    images: [],
+  };
+}
+
+function normalizeQuizUiRect(
+  raw: unknown,
+  fallback: QuizUiRect,
+  minWidth: number,
+  minHeight: number,
+  maxHeight: number,
+): QuizUiRect {
+  if (!raw || typeof raw !== "object") return fallback;
+  const box = raw as Record<string, unknown>;
+  const x = typeof box.x === "number" && Number.isFinite(box.x) ? box.x : fallback.x;
+  const y = typeof box.y === "number" && Number.isFinite(box.y) ? box.y : fallback.y;
+  const width =
+    typeof box.width === "number" && Number.isFinite(box.width)
+      ? Math.max(minWidth, box.width)
+      : fallback.width;
+  const height =
+    typeof box.height === "number" && Number.isFinite(box.height)
+      ? clamp(box.height, minHeight, maxHeight)
+      : fallback.height;
+  const id = typeof box.id === "string" && box.id ? box.id : fallback.id;
+  const fontSize = normalizeResultsFontSize(box.fontSize ?? fallback.fontSize);
+  const backgroundColor =
+    typeof box.backgroundColor === "string" || fallback.backgroundColor
+      ? normalizeStoredColor(
+          box.backgroundColor,
+          fallback.backgroundColor ?? QUIZ_UI_NEXT_BACKGROUND,
+        )
+      : undefined;
+  const textColor =
+    typeof box.textColor === "string" || fallback.textColor
+      ? normalizeStoredColor(box.textColor, fallback.textColor ?? QUIZ_UI_NEXT_TEXT)
+      : undefined;
+  return { id, x, y, width, height, fontSize, backgroundColor, textColor };
+}
+
+function normalizeQuizUi(raw: unknown, pageWidth = 1280, pageHeight = 800): QuizUiDocument {
+  const fallback = emptyQuizUiDocument(pageWidth, pageHeight);
+  if (!raw || typeof raw !== "object") return fallback;
+  const data = raw as Record<string, unknown>;
+  const answers = Array.isArray(data.answers)
+    ? data.answers.map((item, index) =>
+        normalizeQuizUiRect(
+          item,
+          fallback.answers[index] ?? {
+            ...fallback.answers[0],
+            id: quizUiAnswerId(index),
+            y:
+              (fallback.answers[fallback.answers.length - 1]?.y ?? fallback.question.y) +
+              60 * (index + 1),
+          },
+          QUIZ_UI_ANSWER_MIN_WIDTH,
+          QUIZ_UI_ANSWER_MIN_HEIGHT,
+          QUIZ_UI_ANSWER_MAX_HEIGHT,
+        ),
+      )
+    : fallback.answers;
+  return {
+    customized: data.customized === true,
+    backgroundColor: normalizeStoredColor(
+      data.backgroundColor,
+      QUIZ_UI_BACKGROUND_DEFAULT,
+    ),
+    gridVisible: Boolean(data.gridVisible),
+    horizontalTicks: normalizeGridTicks(data.horizontalTicks),
+    verticalTicks: normalizeGridTicks(data.verticalTicks),
+    question: normalizeQuizUiRect(
+      data.question,
+      fallback.question,
+      QUIZ_UI_QUESTION_MIN_WIDTH,
+      QUIZ_UI_QUESTION_MIN_HEIGHT,
+      QUIZ_UI_QUESTION_MAX_HEIGHT,
+    ),
+    answers: answers.length > 0 ? answers : fallback.answers,
+    nextButton: normalizeQuizUiRect(
+      data.nextButton,
+      fallback.nextButton,
+      QUIZ_UI_ANSWER_MIN_WIDTH,
+      QUIZ_UI_ANSWER_MIN_HEIGHT,
+      QUIZ_UI_ANSWER_MAX_HEIGHT,
+    ),
+    backButton: normalizeQuizUiRect(
+      data.backButton,
+      fallback.backButton,
+      QUIZ_UI_ANSWER_MIN_WIDTH,
+      QUIZ_UI_ANSWER_MIN_HEIGHT,
+      QUIZ_UI_ANSWER_MAX_HEIGHT,
+    ),
+    textBoxes: Array.isArray(data.textBoxes)
+      ? data.textBoxes
+          .map(normalizeResultsTextBox)
+          .filter((box): box is ResultsTextBox => box !== null)
+      : [],
+    images: Array.isArray(data.images)
+      ? data.images
+          .map(normalizeResultsImage)
+          .filter((item): item is ResultsImage => item !== null)
+      : [],
+  };
+}
+
+function resolvedQuizUi(
+  doc: QuizUiDocument,
+  pageWidth: number,
+  pageHeight: number,
+): QuizUiDocument {
+  const extras = {
+    textBoxes: doc.textBoxes ?? [],
+    images: doc.images ?? [],
+  };
+  if (doc.customized) return withQuizUiChromeFontDefaults({ ...doc, ...extras });
+  return withQuizUiChromeFontDefaults({
+    ...emptyQuizUiDocument(pageWidth, pageHeight),
+    ...extras,
+  });
+}
+
+function quizUiRects(ui: QuizUiDocument): LayoutDragItem[] {
+  return [
+    ui.question,
+    ...ui.answers,
+    ui.nextButton,
+    ui.backButton,
+    ...(ui.textBoxes ?? []),
+    ...(ui.images ?? []),
+  ].map((item) => ({
+    id: item.id,
+    x: item.x,
+    y: item.y,
+    width: item.width,
+    height: item.height,
+  }));
+}
+
+function quizUiContentHeight(ui: QuizUiDocument, viewportHeight: number) {
+  let bottom = 0;
+  for (const rect of quizUiRects(ui)) {
+    bottom = Math.max(bottom, rect.y + rect.height);
+  }
+  for (const box of ui.textBoxes ?? []) {
+    if (box.showImage && !box.imageAbove) {
+      bottom = Math.max(
+        bottom,
+        box.y + box.height + RESULTS_TEXT_IMAGE_GAP + box.imageHeight,
+      );
+    }
+  }
+  return Math.max(viewportHeight, bottom + RESULTS_PAGE_BOTTOM_PAD);
+}
+
+function findQuizUiRect(ui: QuizUiDocument, id: string): LayoutDragItem | null {
+  return quizUiRects(ui).find((rect) => rect.id === id) ?? null;
+}
+
+function findQuizUiChromeRect(ui: QuizUiDocument, id: string): QuizUiRect | null {
+  if (ui.question.id === id) return ui.question;
+  if (ui.nextButton.id === id) return ui.nextButton;
+  if (ui.backButton.id === id) return ui.backButton;
+  return ui.answers.find((answer) => answer.id === id) ?? null;
+}
+
+function quizUiItemKindForId(ui: QuizUiDocument, id: string): QuizUiItemKind | null {
+  if (ui.question.id === id) return "question";
+  if (ui.nextButton.id === id) return "next";
+  if (ui.backButton.id === id) return "back";
+  if (ui.answers.some((answer) => answer.id === id)) return "answer";
+  if ((ui.textBoxes ?? []).some((box) => box.id === id)) return "text";
+  if ((ui.images ?? []).some((image) => image.id === id)) return "image";
+  return null;
+}
+
+function quizUiChromeKind(
+  ui: QuizUiDocument,
+  id: string | null | undefined,
+): "question" | "answer" | "next" | "back" | null {
+  if (!id) return null;
+  const kind = quizUiItemKindForId(ui, id);
+  if (kind === "question" || kind === "answer" || kind === "next" || kind === "back") {
+    return kind;
+  }
+  return null;
+}
+
+function quizUiChromeTitle(kind: "question" | "answer" | "next" | "back") {
+  if (kind === "question") return "Question";
+  if (kind === "answer") return "Answer";
+  if (kind === "next") return "Next Button";
+  return "Back Button";
+}
+
+function quizUiChromeFontSize(
+  rect: Pick<QuizUiRect, "fontSize"> | null | undefined,
+  kind: "question" | "answer" | "next" | "back",
+) {
+  const fallback =
+    kind === "question"
+      ? QUIZ_UI_QUESTION_FONT_SIZE
+      : kind === "answer"
+        ? QUIZ_UI_ANSWER_FONT_SIZE
+        : QUIZ_UI_BUTTON_FONT_SIZE;
+  const raw = rect?.fontSize;
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    return normalizeResultsFontSize(raw);
+  }
+  return fallback;
+}
+
+function withQuizUiChromeFontDefaults(ui: QuizUiDocument): QuizUiDocument {
+  return {
+    ...ui,
+    question: {
+      ...ui.question,
+      fontSize: quizUiChromeFontSize(ui.question, "question"),
+    },
+    answers: ui.answers.map((answer) => ({
+      ...answer,
+      fontSize: quizUiChromeFontSize(answer, "answer"),
+    })),
+    nextButton: {
+      ...ui.nextButton,
+      fontSize: quizUiChromeFontSize(ui.nextButton, "next"),
+    },
+    backButton: {
+      ...ui.backButton,
+      fontSize: quizUiChromeFontSize(ui.backButton, "back"),
+    },
+  };
+}
+
+function quizUiButtonPaint(rect: QuizUiRect, kind: "next" | "back") {
+  const backgroundColor = normalizeStoredColor(
+    rect.backgroundColor,
+    kind === "next" ? QUIZ_UI_NEXT_BACKGROUND : QUIZ_UI_BACK_BACKGROUND,
+  );
+  const color = normalizeStoredColor(
+    rect.textColor,
+    kind === "next" ? QUIZ_UI_NEXT_TEXT : QUIZ_UI_BACK_TEXT,
+  );
+  return {
+    backgroundColor,
+    color,
+    fontSize: quizUiChromeFontSize(rect, kind),
+  };
+}
+
+function quizUiItemSizeLimits(kind: QuizUiItemKind) {
+  if (kind === "question") {
+    return {
+      minWidth: QUIZ_UI_QUESTION_MIN_WIDTH,
+      minHeight: QUIZ_UI_QUESTION_MIN_HEIGHT,
+      maxHeight: QUIZ_UI_QUESTION_MAX_HEIGHT,
+    };
+  }
+  if (kind === "text") {
+    return {
+      minWidth: RESULTS_TEXT_MIN_WIDTH,
+      minHeight: RESULTS_TEXT_MIN_HEIGHT,
+      maxHeight: RESULTS_TEXT_MAX_HEIGHT,
+    };
+  }
+  if (kind === "image" || kind === "text-image") {
+    return {
+      minWidth: RESULTS_IMAGE_MIN_SIZE,
+      minHeight: RESULTS_IMAGE_MIN_SIZE,
+      maxHeight: RESULTS_IMAGE_MAX_SIZE,
+    };
+  }
+  return {
+    minWidth: QUIZ_UI_ANSWER_MIN_WIDTH,
+    minHeight: QUIZ_UI_ANSWER_MIN_HEIGHT,
+    maxHeight: QUIZ_UI_ANSWER_MAX_HEIGHT,
+  };
+}
+
+function patchQuizUiRect(
+  ui: QuizUiDocument,
+  id: string,
+  patch: Partial<
+    Pick<
+      QuizUiRect,
+      "x" | "y" | "width" | "height" | "fontSize" | "backgroundColor" | "textColor"
+    >
+  >,
+): QuizUiDocument {
+  const apply = <T extends { id: string }>(rect: T) =>
+    rect.id === id ? { ...rect, ...patch } : rect;
+  return {
+    ...ui,
+    customized: true,
+    question: apply(ui.question),
+    answers: ui.answers.map(apply),
+    nextButton: apply(ui.nextButton),
+    backButton: apply(ui.backButton),
+    textBoxes: (ui.textBoxes ?? []).map(apply),
+    images: (ui.images ?? []).map(apply),
+  };
+}
+
+function quizUiAnswerRects(ui: QuizUiDocument, count: number): QuizUiRect[] {
+  if (count <= 0) return [];
+  const slots = ui.answers;
+  const template =
+    slots[slots.length - 1] ?? {
+      id: quizUiAnswerId(0),
+      x: ui.question.x,
+      y: ui.question.y + ui.question.height + 24,
+      width: ui.question.width,
+      height: 48,
+      fontSize: QUIZ_UI_ANSWER_FONT_SIZE,
+    };
+  const gap =
+    slots.length >= 2
+      ? Math.max(8, slots[1].y - (slots[0].y + slots[0].height))
+      : 12;
+  const out: QuizUiRect[] = [];
+  for (let i = 0; i < count; i += 1) {
+    if (i < slots.length) {
+      out.push(slots[i]);
+      continue;
+    }
+    const prev = out[i - 1] ?? template;
+    out.push({
+      id: quizUiAnswerId(i),
+      x: template.x,
+      y: prev.y + prev.height + gap,
+      width: template.width,
+      height: template.height,
+      fontSize: template.fontSize,
+    });
+  }
+  return out;
 }
 
 function resultsContentHeight(
@@ -4115,6 +5110,88 @@ function resultsContentHeight(
     bottom = Math.max(bottom, image.y + image.height);
   }
   return Math.max(viewportHeight, bottom + RESULTS_PAGE_BOTTOM_PAD);
+}
+
+type HorizontalBounds = { minX: number; maxX: number };
+
+function includeHorizontalBounds(
+  bounds: HorizontalBounds | null,
+  left: number,
+  right: number,
+): HorizontalBounds {
+  if (!bounds) return { minX: left, maxX: right };
+  return {
+    minX: Math.min(bounds.minX, left),
+    maxX: Math.max(bounds.maxX, right),
+  };
+}
+
+function resultsHorizontalBounds(results: ResultsDocument): HorizontalBounds | null {
+  let bounds: HorizontalBounds | null = null;
+  const include = (left: number, right: number) => {
+    bounds = includeHorizontalBounds(bounds, left, right);
+  };
+  for (const box of results.textBoxes) {
+    include(box.x, box.x + box.width);
+    if (box.showImage) {
+      const imageLeft = box.x + box.imageOffsetX;
+      include(imageLeft, imageLeft + box.imageWidth);
+    }
+  }
+  for (const axis of results.axes) {
+    const pad = resultsAxisImagePad(axis);
+    include(axis.x - pad, axis.x + axis.width + pad);
+  }
+  for (const compass of results.compasses) {
+    const side = RESULTS_COMPASS_SIDE_LABEL_WIDTH + RESULTS_COMPASS_LABEL_GAP;
+    include(compass.x - side, compass.x + compass.width + side);
+  }
+  for (const bar of results.bars ?? []) {
+    include(bar.x, bar.x + bar.width);
+  }
+  for (const image of results.images ?? []) {
+    include(image.x, image.x + image.width);
+  }
+  return bounds;
+}
+
+function quizUiHorizontalBounds(ui: QuizUiDocument): HorizontalBounds | null {
+  let bounds: HorizontalBounds | null = null;
+  for (const rect of quizUiRects(ui)) {
+    bounds = includeHorizontalBounds(bounds, rect.x, rect.x + rect.width);
+  }
+  for (const box of ui.textBoxes ?? []) {
+    if (!box.showImage) continue;
+    const imageLeft = box.x + box.imageOffsetX;
+    bounds = includeHorizontalBounds(
+      bounds,
+      imageLeft,
+      imageLeft + box.imageWidth,
+    );
+  }
+  return bounds;
+}
+
+function horizontalPlayFit(
+  bounds: HorizontalBounds | null,
+  viewportWidth: number,
+  padding = 24,
+): { scale: number; offsetX: number } {
+  if (!bounds || viewportWidth <= 1) return { scale: 1, offsetX: 0 };
+  const width = Math.max(1, bounds.maxX - bounds.minX);
+  const fits = bounds.minX >= -8 && bounds.maxX <= viewportWidth + 8;
+  const clusteredRight = bounds.minX > Math.max(48, viewportWidth * 0.2);
+  if (fits && !clusteredRight) return { scale: 1, offsetX: 0 };
+  const scale = Math.min(1, viewportWidth / Math.max(1, width + padding * 2));
+  const offsetX = (viewportWidth - width * scale) / 2 - bounds.minX * scale;
+  return { scale, offsetX };
+}
+
+function layoutPaintTransform(scale: number, offsetX = 0) {
+  if (scale === 1 && offsetX === 0) return undefined;
+  return offsetX === 0
+    ? `scale(${scale})`
+    : `translate(${offsetX}px, 0) scale(${scale})`;
 }
 
 function findResultsRect(
@@ -4178,6 +5255,150 @@ function findResultsRect(
     };
   }
   return null;
+}
+
+function rectsIntersect(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+) {
+  return (
+    a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
+  );
+}
+
+function boundingRectOf(
+  items: Array<{ x: number; y: number; width: number; height: number }>,
+) {
+  if (items.length === 0) {
+    return { x: 0, y: 0, width: 0, height: 0 };
+  }
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const item of items) {
+    left = Math.min(left, item.x);
+    top = Math.min(top, item.y);
+    right = Math.max(right, item.x + item.width);
+    bottom = Math.max(bottom, item.y + item.height);
+  }
+  return {
+    x: left,
+    y: top,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top),
+  };
+}
+
+function allResultsLayoutItems(results: ResultsDocument): LayoutDragItem[] {
+  return [
+    ...results.textBoxes.map((box) => ({
+      id: box.id,
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+    })),
+    ...results.axes.map((axis) => ({
+      id: axis.id,
+      x: axis.x,
+      y: axis.y,
+      width: axis.width,
+      height: axis.height,
+    })),
+    ...results.compasses.map((compass) => ({
+      id: compass.id,
+      x: compass.x,
+      y: compass.y,
+      width: compass.width,
+      height: compass.height,
+    })),
+    ...(results.bars ?? []).map((bar) => ({
+      id: bar.id,
+      x: bar.x,
+      y: bar.y,
+      width: bar.width,
+      height: bar.height,
+    })),
+    ...(results.images ?? []).map((image) => ({
+      id: image.id,
+      x: image.x,
+      y: image.y,
+      width: image.width,
+      height: image.height,
+    })),
+  ];
+}
+
+function pointerToLayoutPage(
+  e: { clientX: number; clientY: number },
+  viewport: HTMLElement | null,
+  scale: number,
+  leftInset: number,
+) {
+  if (!viewport) return { x: 0, y: 0 };
+  const rect = viewport.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left - leftInset + viewport.scrollLeft) / Math.max(0.001, scale),
+    y: Math.max(0, (e.clientY - rect.top + viewport.scrollTop) / Math.max(0.001, scale)),
+  };
+}
+
+function scaleItemsFromTopRight(
+  items: LayoutDragItem[],
+  scaleX: number,
+  scaleY: number,
+): LayoutDragItem[] {
+  const bounds = boundingRectOf(items);
+  const originRight = bounds.x + bounds.width;
+  const originTop = bounds.y;
+  return items.map((item) => ({
+    ...item,
+    x: originRight - (originRight - item.x) * scaleX,
+    y: originTop + (item.y - originTop) * scaleY,
+    width: item.width * scaleX,
+    height: item.height * scaleY,
+  }));
+}
+
+function translateItems(items: LayoutDragItem[], dx: number, dy: number): LayoutDragItem[] {
+  return items.map((item) => ({
+    ...item,
+    x: item.x + dx,
+    y: item.y + dy,
+  }));
+}
+
+function patchResultsRects(
+  results: ResultsDocument,
+  items: LayoutDragItem[],
+): ResultsDocument {
+  let next = results;
+  for (const item of items) {
+    next = patchResultsRect(next, item.id, {
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
+    });
+  }
+  return next;
+}
+
+function patchQuizUiRects(ui: QuizUiDocument, items: LayoutDragItem[]): QuizUiDocument {
+  let next = ui;
+  for (const item of items) {
+    next = patchQuizUiRect(next, item.id, {
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
+    });
+  }
+  return next;
 }
 
 function patchResultsRect(
@@ -4263,9 +5484,11 @@ function resultsItemSizeLimits(kind: ResultsItemKind) {
 }
 
 export function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
-  const defaultAnswers = Array.isArray(doc.defaultAnswers)
-    ? (doc.defaultAnswers as AnswerOption[])
-    : [createDefaultAnswer()];
+  const parsedDefaultAnswers = normalizeAnswers(doc.defaultAnswers);
+  const defaultAnswers =
+    parsedDefaultAnswers.length > 0
+      ? parsedDefaultAnswers
+      : [createDefaultAnswer()];
 
   let sections = Array.isArray(doc.sections)
     ? doc.sections.map(normalizeSection).filter((s): s is QuizSection => s !== null)
@@ -4290,8 +5513,9 @@ export function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
               .map(normalizeProjectVariable)
               .filter((v): v is ProjectVariable => v !== null)
           : [],
-        localDefaultAnswers: [],
-        boxes,
+    localDefaultAnswers: [],
+    localDefaultQuestionColor: null,
+    boxes,
         transitions: (
           Array.isArray(doc.transitions)
             ? doc.transitions
@@ -4319,9 +5543,22 @@ export function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
           .filter((v): v is ProjectVariable => v !== null)
       : [],
     defaultAnswers: defaultAnswers.length > 0 ? defaultAnswers : [createDefaultAnswer()],
+    defaultQuestionColor: normalizeStoredColor(
+      doc.defaultQuestionColor,
+      QUESTION_BOX_COLOR_DEFAULT,
+    ),
+    defaultAnswerColor: normalizeStoredColor(
+      doc.defaultAnswerColor,
+      ANSWER_BOX_COLOR_DEFAULT,
+    ),
+    defaultAnswerTextColor: normalizeStoredColor(
+      doc.defaultAnswerTextColor,
+      ANSWER_TEXT_COLOR_DEFAULT,
+    ),
     sections,
     activeSectionId,
     results: normalizeResults(doc.results),
+    quizUi: normalizeQuizUi(doc.quizUi),
     listing: normalizeListing(doc.listing),
   };
 }
@@ -4335,9 +5572,13 @@ function persistQuiz(quiz: PersistedQuiz, options?: { keepalive?: boolean }) {
       updatedAt: quiz.updatedAt,
       variables: quiz.variables,
       defaultAnswers: quiz.defaultAnswers,
+      defaultQuestionColor: quiz.defaultQuestionColor,
+      defaultAnswerColor: quiz.defaultAnswerColor,
+      defaultAnswerTextColor: quiz.defaultAnswerTextColor,
       sections: quiz.sections,
       activeSectionId: quiz.activeSectionId,
       results: quiz.results,
+      quizUi: quiz.quizUi,
       listing: quiz.listing,
     },
     options,
@@ -4451,26 +5692,27 @@ export function CreateQuizEditor({
   const localDefaultAnsNameRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const [projectName, setProjectName] = useState(initialQuiz.projectName);
   const [sectionName, setSectionName] = useState(initialSection.name);
-  const [settingsPane, setSettingsPane] = useState<"project" | "section" | "results">(
-    "project",
-  );
+  const [settingsPane, setSettingsPane] = useState<
+    "project" | "section" | "results" | "quiz-ui"
+  >("project");
   const [sections, setSections] = useState<QuizSection[]>(initialQuiz.sections);
   const [activeSectionId, setActiveSectionId] = useState(initialSection.id);
   const [boxes, setBoxes] = useState<CanvasBox[]>(initialSection.boxes);
   const [camera, setCamera] = useState<Camera>(initialSection.camera);
   const [menu, setMenu] = useState<ContextMenuState>(null);
   const [dragKind, setDragKind] = useState<
-    "pan" | "box" | "results-text" | "results-resize" | null
+    "pan" | "box" | "results-text" | "results-resize" | "layout-marquee" | null
   >(null);
   const [draggingBoxId, setDraggingBoxId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedTransitionId, setSelectedTransitionId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [deleteSectionConfirmOpen, setDeleteSectionConfirmOpen] = useState(false);
-  const [editorView, setEditorView] = useState<"section" | "results">(
+  const [editorView, setEditorView] = useState<"section" | "results" | "quiz-ui">(
     playBoot?.kind === "results" ? "results" : "section",
   );
   const [results, setResults] = useState<ResultsDocument>(initialQuiz.results);
+  const [quizUi, setQuizUi] = useState<QuizUiDocument>(initialQuiz.quizUi);
   const [selectedResultsTextId, setSelectedResultsTextId] = useState<string | null>(null);
   const [selectedResultsAxisId, setSelectedResultsAxisId] = useState<string | null>(null);
   const [selectedResultsCompassId, setSelectedResultsCompassId] = useState<string | null>(
@@ -4482,7 +5724,17 @@ export function CreateQuizEditor({
   const [selectedResultsImageId, setSelectedResultsImageId] = useState<
     string | null
   >(null);
+  const [selectedResultsIds, setSelectedResultsIds] = useState<string[]>([]);
+  const [selectedQuizUiId, setSelectedQuizUiId] = useState<string | null>(null);
+  const [selectedQuizUiIds, setSelectedQuizUiIds] = useState<string[]>([]);
+  const [layoutMarquee, setLayoutMarquee] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
   const [resultsPreview, setResultsPreview] = useState(playBoot?.kind === "results");
+  const [quizUiPreview, setQuizUiPreview] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [listing, setListing] = useState<QuizListing>(initialQuiz.listing);
   const [listingSaved, setListingSaved] = useState(false);
@@ -4510,9 +5762,21 @@ export function CreateQuizEditor({
   const [defaultAnswers, setDefaultAnswers] = useState<AnswerOption[]>(
     initialQuiz.defaultAnswers,
   );
+  const [defaultQuestionColor, setDefaultQuestionColor] = useState(
+    initialQuiz.defaultQuestionColor,
+  );
+  const [defaultAnswerColor, setDefaultAnswerColor] = useState(
+    initialQuiz.defaultAnswerColor,
+  );
+  const [defaultAnswerTextColor, setDefaultAnswerTextColor] = useState(
+    initialQuiz.defaultAnswerTextColor,
+  );
   const [localDefaultAnswers, setLocalDefaultAnswers] = useState<AnswerOption[]>(
     initialSection.localDefaultAnswers,
   );
+  const [localDefaultQuestionColor, setLocalDefaultQuestionColor] = useState<
+    string | null
+  >(initialSection.localDefaultQuestionColor);
   const [transitions, setTransitions] = useState<Transition[]>(initialSection.transitions);
   const [transitionDraft, setTransitionDraft] = useState<TransitionDraft | null>(null);
   const [focusVarId, setFocusVarId] = useState<string | null>(null);
@@ -4533,7 +5797,11 @@ export function CreateQuizEditor({
   const variablesRef = useRef(variables);
   const localVariablesRef = useRef(localVariables);
   const defaultAnswersRef = useRef(defaultAnswers);
+  const defaultQuestionColorRef = useRef(defaultQuestionColor);
+  const defaultAnswerColorRef = useRef(defaultAnswerColor);
+  const defaultAnswerTextColorRef = useRef(defaultAnswerTextColor);
   const localDefaultAnswersRef = useRef(localDefaultAnswers);
+  const localDefaultQuestionColorRef = useRef(localDefaultQuestionColor);
   const transitionsRef = useRef(transitions);
   const selectedIdRef = useRef(selectedId);
   const selectedTransitionIdRef = useRef(selectedTransitionId);
@@ -4542,16 +5810,21 @@ export function CreateQuizEditor({
   const selectedResultsCompassIdRef = useRef(selectedResultsCompassId);
   const selectedResultsBarIdRef = useRef(selectedResultsBarId);
   const selectedResultsImageIdRef = useRef(selectedResultsImageId);
+  const selectedResultsIdsRef = useRef(selectedResultsIds);
+  const selectedQuizUiIdRef = useRef(selectedQuizUiId);
+  const selectedQuizUiIdsRef = useRef(selectedQuizUiIds);
   const resultsPreviewRef = useRef(resultsPreview);
+  const quizUiPreviewRef = useRef(quizUiPreview);
   const publishOpenRef = useRef(publishOpen);
   const listingRef = useRef(listing);
   const quizScreenRef = useRef(quizScreen);
   const quizTieBreaksRef = useRef<Record<string, number>>(playBoot?.tieBreaks ?? {});
-  const quizReturnViewRef = useRef<"section" | "results">("section");
+  const quizReturnViewRef = useRef<"section" | "results" | "quiz-ui">("section");
   const quizReturnPreviewRef = useRef(false);
   const exitQuizPlayRef = useRef<() => void>(() => {});
   const axisLabelHeightRef = useRef<Record<string, number>>({});
   const resultsRef = useRef(results);
+  const quizUiRef = useRef(quizUi);
   const editorViewRef = useRef(editorView);
   const resultsScaleRef = useRef(1);
   const resultsLeftInsetRef = useRef(0);
@@ -4565,7 +5838,11 @@ export function CreateQuizEditor({
   variablesRef.current = variables;
   localVariablesRef.current = localVariables;
   defaultAnswersRef.current = defaultAnswers;
+  defaultQuestionColorRef.current = defaultQuestionColor;
+  defaultAnswerColorRef.current = defaultAnswerColor;
+  defaultAnswerTextColorRef.current = defaultAnswerTextColor;
   localDefaultAnswersRef.current = localDefaultAnswers;
+  localDefaultQuestionColorRef.current = localDefaultQuestionColor;
   transitionsRef.current = transitions;
   selectedIdRef.current = selectedId;
   selectedTransitionIdRef.current = selectedTransitionId;
@@ -4574,12 +5851,17 @@ export function CreateQuizEditor({
   selectedResultsCompassIdRef.current = selectedResultsCompassId;
   selectedResultsBarIdRef.current = selectedResultsBarId;
   selectedResultsImageIdRef.current = selectedResultsImageId;
+  selectedResultsIdsRef.current = selectedResultsIds;
+  selectedQuizUiIdRef.current = selectedQuizUiId;
+  selectedQuizUiIdsRef.current = selectedQuizUiIds;
   resultsPreviewRef.current = resultsPreview;
+  quizUiPreviewRef.current = quizUiPreview;
   publishOpenRef.current = publishOpen;
   listingRef.current = listing;
   quizScreenRef.current = quizScreen;
   axisLabelHeightRef.current = axisLabelHeights;
   resultsRef.current = results;
+  quizUiRef.current = quizUi;
   editorViewRef.current = editorView;
   transitionDraftRef.current = transitionDraft;
 
@@ -4618,6 +5900,11 @@ export function CreateQuizEditor({
   const selectedBox = boxes.find((b) => b.id === selectedId) ?? null;
   const selectedQuestion =
     editorView === "section" && selectedBox?.kind === "question" ? selectedBox : null;
+  const defaultQuestionPaint = questionBoxPaint(
+    resolvedDefaultQuestionColor(localDefaultQuestionColor, defaultQuestionColor),
+  );
+  const placeholderAnswers =
+    localDefaultAnswers.length > 0 ? localDefaultAnswers : defaultAnswers;
   const selectedEffectBlock =
     editorView === "section" && selectedBox && isEffectBlock(selectedBox)
       ? selectedBox
@@ -4629,7 +5916,10 @@ export function CreateQuizEditor({
   const selectedResultsText =
     editorView === "results"
       ? (results.textBoxes.find((box) => box.id === selectedResultsTextId) ?? null)
-      : null;
+      : editorView === "quiz-ui" && selectedQuizUiId
+        ? ((quizUi.textBoxes ?? []).find((box) => box.id === selectedQuizUiId) ??
+          null)
+        : null;
   const selectedResultsAxis =
     editorView === "results"
       ? (results.axes.find((axis) => axis.id === selectedResultsAxisId) ?? null)
@@ -4649,24 +5939,37 @@ export function CreateQuizEditor({
       ? ((results.images ?? []).find(
           (item) => item.id === selectedResultsImageId,
         ) ?? null)
-      : null;
+      : editorView === "quiz-ui" && selectedQuizUiId
+        ? ((quizUi.images ?? []).find((item) => item.id === selectedQuizUiId) ??
+          null)
+        : null;
   const allVariables = quizScreen
     ? [...quizScreen.projectVariables, ...quizScreen.localVariables]
     : [...variables, ...localVariables];
-  const hideEditorChrome = playOnly || resultsPreview || quizScreen !== null || publishOpen;
+  const hideEditorChrome =
+    playOnly ||
+    resultsPreview ||
+    quizUiPreview ||
+    quizScreen !== null ||
+    publishOpen;
   const isResultsView = editorView === "results";
+  const isQuizUiView = editorView === "quiz-ui";
   const resultsLeftInset =
-    isResultsView &&
-    !resultsPreview &&
+    ((isResultsView && !resultsPreview) || (isQuizUiView && !quizUiPreview)) &&
     (selectedResultsText ||
       selectedResultsAxis ||
       selectedResultsCompass ||
       selectedResultsBar ||
-      selectedResultsImage)
+      selectedResultsImage ||
+      (selectedQuizUiIds.length === 1 &&
+        quizUiChromeKind(quizUi, selectedQuizUiIds[0])))
       ? SIDEBAR_WIDTH
       : 0;
   const resultsRightInset =
-    isResultsView && !resultsPreview && settingsOpen ? SIDEBAR_WIDTH : 0;
+    ((isResultsView && !resultsPreview) || (isQuizUiView && !quizUiPreview)) &&
+    settingsOpen
+      ? SIDEBAR_WIDTH
+      : 0;
   const resultsBaseWidth = Math.max(1, viewportSize.width);
   const resultsAvailableWidth = Math.max(
     1,
@@ -4734,6 +6037,7 @@ export function CreateQuizEditor({
             name: sectionNameRef.current,
             localVariables: localVariablesRef.current,
             localDefaultAnswers: localDefaultAnswersRef.current,
+            localDefaultQuestionColor: localDefaultQuestionColorRef.current,
             boxes: boxesRef.current,
             transitions: transitionsRef.current,
             camera: cameraRef.current,
@@ -4746,12 +6050,14 @@ export function CreateQuizEditor({
     sectionNameRef.current = section.name;
     localVariablesRef.current = section.localVariables;
     localDefaultAnswersRef.current = section.localDefaultAnswers;
+    localDefaultQuestionColorRef.current = section.localDefaultQuestionColor ?? null;
     boxesRef.current = section.boxes;
     transitionsRef.current = section.transitions;
     cameraRef.current = section.camera;
     setSectionName(section.name);
     setLocalVariables(section.localVariables);
     setLocalDefaultAnswers(section.localDefaultAnswers);
+    setLocalDefaultQuestionColor(section.localDefaultQuestionColor ?? null);
     setBoxes(section.boxes);
     setTransitions(section.transitions);
     setCamera(section.camera);
@@ -4770,9 +6076,13 @@ export function CreateQuizEditor({
       updatedAt: Date.now(),
       variables: variablesRef.current,
       defaultAnswers: defaultAnswersRef.current,
+      defaultQuestionColor: defaultQuestionColorRef.current,
+      defaultAnswerColor: defaultAnswerColorRef.current,
+      defaultAnswerTextColor: defaultAnswerTextColorRef.current,
       sections: mergedSections,
       activeSectionId: activeSectionIdRef.current,
       results: resultsRef.current,
+      quizUi: quizUiRef.current,
       listing: listingRef.current,
     };
   }
@@ -4782,9 +6092,13 @@ export function CreateQuizEditor({
       projectName: projectNameRef.current,
       variables: variablesRef.current,
       defaultAnswers: defaultAnswersRef.current,
+      defaultQuestionColor: defaultQuestionColorRef.current,
+      defaultAnswerColor: defaultAnswerColorRef.current,
+      defaultAnswerTextColor: defaultAnswerTextColorRef.current,
       sections: getSectionsWithActive(),
       activeSectionId: activeSectionIdRef.current,
       results: resultsRef.current,
+      quizUi: quizUiRef.current,
       listing: listingRef.current,
       editorView: editorViewRef.current,
       selectedId: selectedIdRef.current,
@@ -4794,6 +6108,9 @@ export function CreateQuizEditor({
       selectedResultsCompassId: selectedResultsCompassIdRef.current,
       selectedResultsBarId: selectedResultsBarIdRef.current,
       selectedResultsImageId: selectedResultsImageIdRef.current,
+      selectedResultsIds: selectedResultsIdsRef.current,
+      selectedQuizUiId: selectedQuizUiIdRef.current,
+      selectedQuizUiIds: selectedQuizUiIdsRef.current,
     };
   }
 
@@ -4805,9 +6122,16 @@ export function CreateQuizEditor({
     projectNameRef.current = next.projectName;
     variablesRef.current = next.variables;
     defaultAnswersRef.current = next.defaultAnswers;
+    defaultQuestionColorRef.current =
+      next.defaultQuestionColor ?? QUESTION_BOX_COLOR_DEFAULT;
+    defaultAnswerColorRef.current =
+      next.defaultAnswerColor ?? ANSWER_BOX_COLOR_DEFAULT;
+    defaultAnswerTextColorRef.current =
+      next.defaultAnswerTextColor ?? ANSWER_TEXT_COLOR_DEFAULT;
     sectionsRef.current = next.sections;
     activeSectionIdRef.current = active.id;
     resultsRef.current = next.results;
+    quizUiRef.current = next.quizUi ?? emptyQuizUiDocument();
     listingRef.current = next.listing ?? emptyListing();
     editorViewRef.current = next.editorView;
     selectedIdRef.current = next.selectedId;
@@ -4817,16 +6141,31 @@ export function CreateQuizEditor({
     selectedResultsCompassIdRef.current = next.selectedResultsCompassId ?? null;
     selectedResultsBarIdRef.current = next.selectedResultsBarId ?? null;
     selectedResultsImageIdRef.current = next.selectedResultsImageId ?? null;
+    selectedResultsIdsRef.current = next.selectedResultsIds ?? [];
+    selectedQuizUiIdRef.current = next.selectedQuizUiId ?? null;
+    selectedQuizUiIdsRef.current = next.selectedQuizUiIds ?? [];
     setProjectName(next.projectName);
     setVariables(next.variables);
     setDefaultAnswers(next.defaultAnswers);
+    setDefaultQuestionColor(
+      next.defaultQuestionColor ?? QUESTION_BOX_COLOR_DEFAULT,
+    );
+    setDefaultAnswerColor(
+      next.defaultAnswerColor ?? ANSWER_BOX_COLOR_DEFAULT,
+    );
+    setDefaultAnswerTextColor(
+      next.defaultAnswerTextColor ?? ANSWER_TEXT_COLOR_DEFAULT,
+    );
     setSections(next.sections);
     setActiveSectionId(active.id);
     setResults(next.results);
+    setQuizUi(next.quizUi ?? emptyQuizUiDocument());
     setListing(next.listing ?? emptyListing());
     setEditorView(next.editorView);
     if (next.editorView === "results") {
       setSettingsPane("project");
+    } else if (next.editorView === "quiz-ui") {
+      setSettingsPane("quiz-ui");
     }
     loadSection(active);
     setSelectedId(next.selectedId);
@@ -4836,6 +6175,9 @@ export function CreateQuizEditor({
     setSelectedResultsCompassId(next.selectedResultsCompassId ?? null);
     setSelectedResultsBarId(next.selectedResultsBarId ?? null);
     setSelectedResultsImageId(next.selectedResultsImageId ?? null);
+    setSelectedResultsIds(next.selectedResultsIds ?? []);
+    setSelectedQuizUiId(next.selectedQuizUiId ?? null);
+    setSelectedQuizUiIds(next.selectedQuizUiIds ?? []);
     queueMicrotask(() => {
       applyingHistoryRef.current = false;
     });
@@ -4857,8 +6199,11 @@ export function CreateQuizEditor({
     activeSectionIdRef.current = next.id;
     setActiveSectionId(next.id);
     setEditorView("section");
-    setSettingsPane((pane) => (pane === "results" ? "project" : pane));
+    setSettingsPane((pane) =>
+      pane === "results" || pane === "quiz-ui" ? "project" : pane,
+    );
     setResultsPreview(false);
+    setQuizUiPreview(false);
     loadSection(next);
   }
 
@@ -4873,12 +6218,57 @@ export function CreateQuizEditor({
     setSelectedTransitionId(null);
     setSelectedResultsTextId(null);
     setSelectedResultsAxisId(null);
-    setSelectedResultsCompassId(null); setSelectedResultsBarId(null); setSelectedResultsImageId(null);
+    setSelectedResultsCompassId(null); setSelectedResultsBarId(null);     setSelectedResultsImageId(null);
+    setSelectedQuizUiId(null);
     setTransitionDraft(null);
     setMenu(null);
     setResultsPreview(false);
+    setQuizUiPreview(false);
     const viewport = viewportRef.current;
-    if (viewport) viewport.scrollTop = 0;
+    if (viewport) {
+      viewport.scrollTop = 0;
+      viewport.scrollLeft = 0;
+    }
+  }
+
+  function openQuizUiView() {
+    if (editorViewRef.current === "quiz-ui") {
+      setSettingsPane("quiz-ui");
+      setQuizUiPreview(false);
+      return;
+    }
+    const merged = getSectionsWithActive();
+    sectionsRef.current = merged;
+    setSections(merged);
+    setEditorView("quiz-ui");
+    setSettingsPane("quiz-ui");
+    setSelectedId(null);
+    setSelectedTransitionId(null);
+    setSelectedResultsTextId(null);
+    setSelectedResultsAxisId(null);
+    setSelectedResultsCompassId(null);
+    setSelectedResultsBarId(null);
+    setSelectedResultsImageId(null);
+    setSelectedQuizUiId(null);
+    setTransitionDraft(null);
+    setMenu(null);
+    setResultsPreview(false);
+    setQuizUiPreview(false);
+    const viewport = viewportRef.current;
+    if (viewport) {
+      viewport.scrollTop = 0;
+      viewport.scrollLeft = 0;
+    }
+  }
+
+  function enterQuizUiPreview() {
+    setQuizUiPreview(true);
+    setSelectedQuizUiId(null);
+    setMenu(null);
+  }
+
+  function exitQuizUiPreview() {
+    setQuizUiPreview(false);
   }
 
   function enterResultsPreview() {
@@ -4903,7 +6293,10 @@ export function CreateQuizEditor({
     setSelectedResultsImageId(null);
     setMenu(null);
     const viewport = viewportRef.current;
-    if (viewport) viewport.scrollTop = 0;
+    if (viewport) {
+      viewport.scrollTop = 0;
+      viewport.scrollLeft = 0;
+    }
   }
 
   function startQuizPlay() {
@@ -4923,6 +6316,7 @@ export function CreateQuizEditor({
     } else {
       setEditorView("section");
       setResultsPreview(false);
+      setQuizUiPreview(false);
     }
   }
 
@@ -4938,7 +6332,10 @@ export function CreateQuizEditor({
     setQuizSelectedAnswerId(null);
     quizTieBreaksRef.current = {};
     setEditorView(quizReturnViewRef.current);
-    setResultsPreview(quizReturnPreviewRef.current);
+    setResultsPreview(
+      quizReturnViewRef.current === "results" && quizReturnPreviewRef.current,
+    );
+    setQuizUiPreview(false);
   }
 
   function quizGoBack() {
@@ -4996,6 +6393,10 @@ export function CreateQuizEditor({
       openResultsView();
       return;
     }
+    if (value === QUIZ_UI_VIEW_ID) {
+      openQuizUiView();
+      return;
+    }
     selectSection(value);
   }
 
@@ -5025,6 +6426,8 @@ export function CreateQuizEditor({
     loadSection(created);
     setSettingsPane("section");
     setSettingsOpen(true);
+    setResultsPreview(false);
+    setQuizUiPreview(false);
   }
 
   function deleteActiveSection() {
@@ -5101,7 +6504,7 @@ export function CreateQuizEditor({
       persistQuiz(getPersistedQuiz());
     }, persistDelay);
     return () => window.clearTimeout(timeoutId);
-  }, [playOnly, projectName, sectionName, sections, activeSectionId, boxes, variables, localVariables, defaultAnswers, localDefaultAnswers, transitions, camera, results, listing]);
+  }, [playOnly, projectName, sectionName, sections, activeSectionId, boxes, variables, localVariables, defaultAnswers, defaultQuestionColor, defaultAnswerColor, defaultAnswerTextColor, localDefaultAnswers, localDefaultQuestionColor, transitions, camera, results, quizUi, listing]);
 
   useEffect(() => {
     if (playOnly) return;
@@ -5192,7 +6595,17 @@ export function CreateQuizEditor({
     const el = viewportRef.current;
     if (!el) return;
     const update = () => {
-      setViewportSize({ width: el.clientWidth, height: el.clientHeight });
+      const rect = el.getBoundingClientRect();
+      setViewportSize({
+        width: Math.max(0, Math.round(rect.width) || el.clientWidth),
+        height: Math.max(0, Math.round(rect.height) || el.clientHeight),
+      });
+      if (
+        editorViewRef.current === "results" ||
+        editorViewRef.current === "quiz-ui"
+      ) {
+        el.scrollLeft = 0;
+      }
     };
     update();
     const observer = new ResizeObserver(update);
@@ -5216,6 +6629,11 @@ export function CreateQuizEditor({
         if (resultsPreviewRef.current) {
           e.preventDefault();
           setResultsPreview(false);
+          return;
+        }
+        if (quizUiPreviewRef.current) {
+          e.preventDefault();
+          setQuizUiPreview(false);
           return;
         }
         if (transitionDraftRef.current) {
@@ -5287,7 +6705,7 @@ export function CreateQuizEditor({
     if (!el) return;
 
     const onWheel = (e: WheelEvent) => {
-      if (editorViewRef.current === "results") return;
+      if (editorViewRef.current === "results" || editorViewRef.current === "quiz-ui") return;
       e.preventDefault();
       setMenu(null);
 
@@ -5354,6 +6772,24 @@ export function CreateQuizEditor({
         return;
       }
 
+      if (drag.type === "layout-marquee") {
+        const page = pointerToLayoutPage(
+          e,
+          viewportRef.current,
+          resultsScaleRef.current,
+          resultsLeftInsetRef.current,
+        );
+        const x0 = drag.originX ?? page.x;
+        const y0 = drag.originY ?? page.y;
+        setLayoutMarquee({
+          x: Math.min(x0, page.x),
+          y: Math.min(y0, page.y),
+          width: Math.abs(page.x - x0),
+          height: Math.abs(page.y - y0),
+        });
+        return;
+      }
+
       if (drag.type === "results-text") {
         if (
           !drag.boxId ||
@@ -5362,6 +6798,152 @@ export function CreateQuizEditor({
           drag.originWidth === undefined ||
           drag.originHeight === undefined
         ) {
+          return;
+        }
+        if (drag.groupItems && drag.groupItems.length > 1) {
+          const scale = Math.max(0.001, resultsScaleRef.current);
+          const pageWidth = resultsBaseWidthRef.current;
+          const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+          const totalDx = (e.clientX - drag.startX) / scale;
+          const totalDy = (e.clientY - drag.startY) / scale;
+          const bounds = boundingRectOf(drag.groupItems);
+          let nextX = bounds.x + totalDx;
+          let nextY = bounds.y + totalDy;
+          const page = pointerToLayoutPage(
+            e,
+            viewportRef.current,
+            scale,
+            resultsLeftInsetRef.current,
+          );
+          const ticks =
+            drag.layoutTarget === "quiz-ui"
+              ? resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight)
+              : resultsRef.current;
+          if (e.ctrlKey) {
+            const { stepX, stepY } = resultsGridSteps(
+              pageWidth,
+              viewportHeight,
+              ticks.horizontalTicks,
+              ticks.verticalTicks,
+            );
+            ({ x: nextX, y: nextY } = snapResultsBoxToGrid(
+              nextX,
+              nextY,
+              bounds.width,
+              bounds.height,
+              page.x,
+              page.y,
+              stepX,
+              stepY,
+            ));
+          }
+          if (drag.layoutTarget === "quiz-ui") {
+            setQuizUi((prev) => {
+              const ui = prev.customized
+                ? prev
+                : resolvedQuizUi(prev, pageWidth, viewportHeight);
+              const pageHeight = Math.max(
+                quizUiContentHeight(ui, viewportHeight),
+                nextY + bounds.height + RESULTS_PAGE_BOTTOM_PAD,
+              );
+              const clamped = clampResultsTextBoxPosition(
+                nextX,
+                nextY,
+                bounds.width,
+                pageWidth,
+                pageHeight,
+                bounds.height,
+              );
+              return patchQuizUiRects(
+                ui,
+                translateItems(
+                  drag.groupItems!,
+                  clamped.x - bounds.x,
+                  clamped.y - bounds.y,
+                ),
+              );
+            });
+          } else {
+            setResults((prev) => {
+              const pageHeight = Math.max(
+                resultsContentHeight(prev, viewportHeight),
+                nextY + bounds.height + RESULTS_PAGE_BOTTOM_PAD,
+              );
+              const clamped = clampResultsTextBoxPosition(
+                nextX,
+                nextY,
+                bounds.width,
+                pageWidth,
+                pageHeight,
+                bounds.height,
+              );
+              return patchResultsRects(
+                prev,
+                translateItems(
+                  drag.groupItems!,
+                  clamped.x - bounds.x,
+                  clamped.y - bounds.y,
+                ),
+              );
+            });
+          }
+          return;
+        }
+        if (drag.quizUiItemKind) {
+          const scale = Math.max(0.001, resultsScaleRef.current);
+          const pageWidth = resultsBaseWidthRef.current;
+          const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+          const totalDx = (e.clientX - drag.startX) / scale;
+          const totalDy = (e.clientY - drag.startY) / scale;
+          let nextX = drag.originX + totalDx;
+          let nextY = drag.originY + totalDy;
+          const width = drag.originWidth;
+          const height = drag.originHeight;
+          const el = viewportRef.current;
+          const viewportRect = el?.getBoundingClientRect();
+          const leftInset = resultsLeftInsetRef.current;
+          const mouseX = viewportRect
+            ? (e.clientX - viewportRect.left - leftInset + (el?.scrollLeft ?? 0)) /
+              scale
+            : nextX;
+          const mouseY = viewportRect
+            ? Math.max(0, (e.clientY - viewportRect.top + (el?.scrollTop ?? 0)) / scale)
+            : nextY;
+          const base = resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight);
+          if (e.ctrlKey) {
+            const { stepX, stepY } = resultsGridSteps(
+              pageWidth,
+              viewportHeight,
+              base.horizontalTicks,
+              base.verticalTicks,
+            );
+            ({ x: nextX, y: nextY } = snapResultsBoxToGrid(
+              nextX,
+              nextY,
+              width,
+              height,
+              mouseX,
+              mouseY,
+              stepX,
+              stepY,
+            ));
+          }
+          setQuizUi((prev) => {
+            const ui = prev.customized ? prev : base;
+            const pageHeight = Math.max(
+              quizUiContentHeight(ui, viewportHeight),
+              nextY + height + RESULTS_PAGE_BOTTOM_PAD,
+            );
+            const next = clampResultsTextBoxPosition(
+              nextX,
+              nextY,
+              width,
+              pageWidth,
+              pageHeight,
+              height,
+            );
+            return patchQuizUiRect(ui, drag.boxId!, next);
+          });
           return;
         }
         if (document.activeElement instanceof HTMLElement) {
@@ -5455,6 +7037,167 @@ export function CreateQuizEditor({
           drag.originWidth === undefined ||
           drag.originHeight === undefined
         ) {
+          return;
+        }
+        if (drag.groupItems && drag.groupItems.length > 1) {
+          const scale = Math.max(0.001, resultsScaleRef.current);
+          const pageWidth = resultsBaseWidthRef.current;
+          const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+          const totalDx = (e.clientX - drag.startX) / scale;
+          const totalDy = (e.clientY - drag.startY) / scale;
+          const page = pointerToLayoutPage(
+            e,
+            viewportRef.current,
+            scale,
+            resultsLeftInsetRef.current,
+          );
+          const ticks =
+            drag.layoutTarget === "quiz-ui"
+              ? resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight)
+              : resultsRef.current;
+          const snapSteps = e.ctrlKey
+            ? {
+                ...resultsGridSteps(
+                  pageWidth,
+                  viewportHeight,
+                  ticks.horizontalTicks,
+                  ticks.verticalTicks,
+                ),
+                mouseX: page.x,
+                mouseY: page.y,
+              }
+            : null;
+          const originBounds = {
+            x: drag.originX,
+            y: drag.originY,
+            width: drag.originWidth,
+            height: drag.originHeight,
+          };
+          const pageHeight = Math.max(
+            viewportHeight,
+            originBounds.y + originBounds.height + RESULTS_PAGE_BOTTOM_PAD,
+          );
+          const resized = resizeResultsTextBox(
+            drag.resizeHandle,
+            originBounds,
+            totalDx,
+            totalDy,
+            pageWidth,
+            pageHeight,
+            snapSteps,
+            {
+              minWidth: 40,
+              minHeight: 40,
+              maxHeight: Math.max(40, pageHeight - originBounds.y),
+            },
+          );
+          let scaleX =
+            originBounds.width > 0 ? resized.width / originBounds.width : 1;
+          let scaleY =
+            originBounds.height > 0 ? resized.height / originBounds.height : 1;
+          for (const item of drag.groupItems) {
+            const limits =
+              drag.layoutTarget === "quiz-ui"
+                ? quizUiItemSizeLimits(
+                    quizUiItemKindForId(
+                      resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight),
+                      item.id,
+                    ) ?? "answer",
+                  )
+                : resultsItemSizeLimits(
+                    findResultsRect(resultsRef.current, item.id)?.kind ?? "text",
+                  );
+            if (item.width > 0) {
+              scaleX = Math.max(scaleX, limits.minWidth / item.width);
+            }
+            if (item.height > 0) {
+              scaleY = Math.max(scaleY, limits.minHeight / item.height);
+              scaleY = Math.min(scaleY, limits.maxHeight / item.height);
+            }
+          }
+          const scaled = scaleItemsFromTopRight(drag.groupItems, scaleX, scaleY);
+          if (drag.layoutTarget === "quiz-ui") {
+            setQuizUi((prev) => {
+              const ui = prev.customized
+                ? prev
+                : resolvedQuizUi(prev, pageWidth, viewportHeight);
+              return patchQuizUiRects(ui, scaled);
+            });
+          } else {
+            setResults((prev) => patchResultsRects(prev, scaled));
+          }
+          return;
+        }
+        if (drag.quizUiItemKind) {
+          const scale = Math.max(0.001, resultsScaleRef.current);
+          const pageWidth = resultsBaseWidthRef.current;
+          const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+          const totalDx = (e.clientX - drag.startX) / scale;
+          const totalDy = (e.clientY - drag.startY) / scale;
+          const el = viewportRef.current;
+          const viewportRect = el?.getBoundingClientRect();
+          const leftInset = resultsLeftInsetRef.current;
+          const mouseX = viewportRect
+            ? (e.clientX - viewportRect.left - leftInset + (el?.scrollLeft ?? 0)) /
+              scale
+            : drag.originX! + totalDx;
+          const mouseY = viewportRect
+            ? Math.max(0, (e.clientY - viewportRect.top + (el?.scrollTop ?? 0)) / scale)
+            : drag.originY! + totalDy;
+          const base = resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight);
+          const snapSteps = e.ctrlKey
+            ? {
+                ...resultsGridSteps(
+                  pageWidth,
+                  viewportHeight,
+                  base.horizontalTicks,
+                  base.verticalTicks,
+                ),
+                mouseX,
+                mouseY,
+              }
+            : null;
+          const limits = quizUiItemSizeLimits(drag.quizUiItemKind);
+          setQuizUi((prev) => {
+            const ui = prev.customized ? prev : base;
+            const pageHeight = Math.max(
+              quizUiContentHeight(ui, viewportHeight),
+              drag.originY! + drag.originHeight! + RESULTS_PAGE_BOTTOM_PAD,
+              drag.originY! + limits.maxHeight + RESULTS_PAGE_BOTTOM_PAD,
+            );
+            const resized = resizeResultsTextBox(
+              drag.resizeHandle!,
+              {
+                x: drag.originX!,
+                y: drag.originY!,
+                width: drag.originWidth!,
+                height: drag.originHeight!,
+              },
+              totalDx,
+              totalDy,
+              pageWidth,
+              pageHeight,
+              snapSteps,
+              limits,
+            );
+            if (drag.quizUiItemKind === "text-image") {
+              return {
+                ...ui,
+                customized: true,
+                textBoxes: (ui.textBoxes ?? []).map((item) =>
+                  item.id === drag.boxId
+                    ? {
+                        ...item,
+                        imageWidth: resized.width,
+                        imageHeight: resized.height,
+                        imageOffsetX: resized.x - item.x,
+                      }
+                    : item,
+                ),
+              };
+            }
+            return patchQuizUiRect(ui, drag.boxId!, resized);
+          });
           return;
         }
         const scale = Math.max(0.001, resultsScaleRef.current);
@@ -5588,11 +7331,74 @@ export function CreateQuizEditor({
       const boxId = drag.boxId;
       const type = drag.type;
       const resultsItemKind = drag.resultsItemKind;
+      const layoutTarget = drag.layoutTarget;
+      const groupItems = drag.groupItems;
+      const originX = drag.originX;
+      const originY = drag.originY;
 
       dragRef.current = null;
       setDragKind(null);
       setDraggingBoxId(null);
       document.body.style.cursor = "";
+
+      if (type === "layout-marquee") {
+        setLayoutMarquee(null);
+        const page = pointerToLayoutPage(
+          e,
+          viewportRef.current,
+          resultsScaleRef.current,
+          resultsLeftInsetRef.current,
+        );
+        const x0 = originX ?? page.x;
+        const y0 = originY ?? page.y;
+        const marquee = {
+          x: Math.min(x0, page.x),
+          y: Math.min(y0, page.y),
+          width: Math.abs(page.x - x0),
+          height: Math.abs(page.y - y0),
+        };
+        if (wasClick || marquee.width < 3 || marquee.height < 3) {
+          if (layoutTarget === "quiz-ui") {
+            setSelectedQuizUiIds([]);
+            setSelectedQuizUiId(null);
+          } else {
+            setSelectedResultsIds([]);
+            setSelectedResultsTextId(null);
+            setSelectedResultsAxisId(null);
+            setSelectedResultsCompassId(null);
+            setSelectedResultsBarId(null);
+            setSelectedResultsImageId(null);
+          }
+          return;
+        }
+        if (layoutTarget === "quiz-ui") {
+          const ui = resolvedQuizUi(
+            quizUiRef.current,
+            resultsBaseWidthRef.current,
+            viewportRef.current?.clientHeight ?? 800,
+          );
+          const ids = quizUiRects(ui)
+            .filter((rect) => rectsIntersect(rect, marquee))
+            .map((rect) => rect.id);
+          setSelectedQuizUiIds(ids);
+          setSelectedQuizUiId(ids.length === 1 ? ids[0] : null);
+        } else {
+          const ids = allResultsLayoutItems(resultsRef.current)
+            .filter((rect) => rectsIntersect(rect, marquee))
+            .map((rect) => rect.id);
+          setSelectedResultsIds(ids);
+          const only = ids.length === 1 ? ids[0] : null;
+          const kind = only
+            ? findResultsRect(resultsRef.current, only)?.kind
+            : null;
+          setSelectedResultsTextId(kind === "text" ? only : null);
+          setSelectedResultsAxisId(kind === "axis" ? only : null);
+          setSelectedResultsCompassId(kind === "compass" ? only : null);
+          setSelectedResultsBarId(kind === "bar" ? only : null);
+          setSelectedResultsImageId(kind === "image" ? only : null);
+        }
+        return;
+      }
 
       if (type === "box" && wasClick && boxId) {
         setSelectedId(boxId);
@@ -5605,6 +7411,12 @@ export function CreateQuizEditor({
         wasClick &&
         boxId
       ) {
+        if (groupItems && groupItems.length > 1) return;
+        if (resultsItemKind === "quiz-ui") {
+          setSelectedQuizUiId(boxId);
+          setSelectedQuizUiIds([boxId]);
+          return;
+        }
         if (resultsItemKind === "compass") {
           setSelectedResultsCompassId(boxId);
           setSelectedResultsTextId(null);
@@ -5632,6 +7444,7 @@ export function CreateQuizEditor({
           setSelectedResultsAxisId(null);
           setSelectedResultsCompassId(null); setSelectedResultsBarId(null); setSelectedResultsImageId(null);
         }
+        setSelectedResultsIds([boxId]);
         return;
       }
 
@@ -5823,10 +7636,317 @@ export function CreateQuizEditor({
     if ((e.target as HTMLElement).closest("[data-results-compass]")) return;
     if ((e.target as HTMLElement).closest("[data-results-bar]")) return;
     if ((e.target as HTMLElement).closest("[data-results-image]")) return;
-    setSelectedResultsTextId(null);
-    setSelectedResultsAxisId(null);
-    setSelectedResultsCompassId(null); setSelectedResultsBarId(null); setSelectedResultsImageId(null);
+    if ((e.target as HTMLElement).closest("[data-layout-group]")) return;
+    const page = pointerToLayoutPage(
+      e,
+      viewportRef.current,
+      resultsScaleRef.current,
+      resultsLeftInsetRef.current,
+    );
+    beginDrag({
+      type: "layout-marquee",
+      pointerId: e.pointerId,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+      originX: page.x,
+      originY: page.y,
+      layoutTarget: "results",
+    });
     setMenu(null);
+  }
+
+  function onQuizUiPointerDown(e: React.PointerEvent<HTMLElement>) {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("[data-quiz-ui-item]")) return;
+    if ((e.target as HTMLElement).closest("[data-layout-group]")) return;
+    const page = pointerToLayoutPage(
+      e,
+      viewportRef.current,
+      resultsScaleRef.current,
+      resultsLeftInsetRef.current,
+    );
+    beginDrag({
+      type: "layout-marquee",
+      pointerId: e.pointerId,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+      originX: page.x,
+      originY: page.y,
+      layoutTarget: "quiz-ui",
+    });
+    setMenu(null);
+  }
+
+  function onQuizUiContextMenu(e: React.MouseEvent<HTMLElement>) {
+    e.preventDefault();
+    if (quizUiPreviewRef.current) return;
+    const el = viewportRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const scale = Math.max(0.001, resultsScaleRef.current);
+    const leftInset = resultsLeftInsetRef.current;
+    const contentX =
+      (e.clientX - rect.left - leftInset + el.scrollLeft) / scale;
+    const contentY = Math.max(
+      0,
+      (e.clientY - rect.top + el.scrollTop) / scale,
+    );
+    setMenu({
+      kind: "quiz-ui-canvas",
+      screenX: e.clientX,
+      screenY: e.clientY,
+      contentX,
+      contentY,
+    });
+  }
+
+  function onQuizUiTextContextMenu(
+    e: React.MouseEvent<HTMLElement>,
+    textId: string,
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedQuizUiId(textId);
+    setSelectedQuizUiIds([textId]);
+    setMenu({
+      kind: "quiz-ui-text",
+      screenX: e.clientX,
+      screenY: e.clientY,
+      textId,
+    });
+  }
+
+  function onQuizUiImageContextMenu(
+    e: React.MouseEvent<HTMLElement>,
+    imageId: string,
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedQuizUiId(imageId);
+    setSelectedQuizUiIds([imageId]);
+    setMenu({
+      kind: "quiz-ui-image",
+      screenX: e.clientX,
+      screenY: e.clientY,
+      imageId,
+    });
+  }
+
+  function onQuizUiItemPointerDown(
+    e: React.PointerEvent<HTMLElement>,
+    itemId: string,
+  ) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    if ((e.target as HTMLElement).closest("[data-results-resize]")) return;
+    e.preventDefault();
+    const pageWidth = resultsBaseWidthRef.current;
+    const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+    const ui = resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight);
+    const rect = findQuizUiRect(ui, itemId);
+    const kind = quizUiItemKindForId(ui, itemId);
+    if (!rect || !kind) return;
+    const groupIds = selectedQuizUiIdsRef.current;
+    const inGroup = groupIds.length > 1 && groupIds.includes(itemId);
+    const groupItems = inGroup
+      ? groupIds
+          .map((id) => findQuizUiRect(ui, id))
+          .filter((item): item is LayoutDragItem => item !== null)
+      : undefined;
+    if (!inGroup) {
+      setSelectedQuizUiId(itemId);
+      setSelectedQuizUiIds([itemId]);
+    }
+    beginDrag({
+      type: "results-text",
+      pointerId: e.pointerId,
+      boxId: itemId,
+      resultsItemKind: "quiz-ui",
+      quizUiItemKind: kind,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+      originX: rect.x,
+      originY: rect.y,
+      originWidth: rect.width,
+      originHeight: rect.height,
+      historyPushed: false,
+      preDragSnapshot: cloneSnapshot(getSnapshot()),
+      groupItems,
+      layoutTarget: "quiz-ui",
+    });
+  }
+
+  function onQuizUiResizePointerDown(
+    e: React.PointerEvent<HTMLElement>,
+    itemId: string,
+    handle: ResultsResizeHandle,
+    kindOverride?: QuizUiItemKind,
+  ) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const pageWidth = resultsBaseWidthRef.current;
+    const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+    const ui = resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight);
+    if (kindOverride === "text-image") {
+      const box = (ui.textBoxes ?? []).find((item) => item.id === itemId);
+      if (!box?.showImage) return;
+      const rect = resultsTextAttachedImageRect(box);
+      setSelectedQuizUiId(itemId);
+      const cursor =
+        RESULTS_RESIZE_HANDLES.find((entry) => entry.handle === handle)?.cursor ??
+        "nwse-resize";
+      beginDrag({
+        type: "results-resize",
+        pointerId: e.pointerId,
+        boxId: itemId,
+        resultsItemKind: "quiz-ui",
+        quizUiItemKind: "text-image",
+        lastX: e.clientX,
+        lastY: e.clientY,
+        startX: e.clientX,
+        startY: e.clientY,
+        moved: false,
+        originX: rect.x,
+        originY: rect.y,
+        originWidth: rect.width,
+        originHeight: rect.height,
+        resizeHandle: handle,
+        resizeCursor: cursor,
+        historyPushed: false,
+        preDragSnapshot: cloneSnapshot(getSnapshot()),
+        layoutTarget: "quiz-ui",
+      });
+      document.body.style.cursor = cursor;
+      return;
+    }
+    const rect = findQuizUiRect(ui, itemId);
+    const kind = kindOverride ?? quizUiItemKindForId(ui, itemId);
+    if (!rect || !kind) return;
+    setSelectedQuizUiId(itemId);
+    const cursor =
+      RESULTS_RESIZE_HANDLES.find((entry) => entry.handle === handle)?.cursor ??
+      "nwse-resize";
+    beginDrag({
+      type: "results-resize",
+      pointerId: e.pointerId,
+      boxId: itemId,
+      resultsItemKind: "quiz-ui",
+      quizUiItemKind: kind,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+      originX: rect.x,
+      originY: rect.y,
+      originWidth: rect.width,
+      originHeight: rect.height,
+      resizeHandle: handle,
+      resizeCursor: cursor,
+      historyPushed: false,
+      preDragSnapshot: cloneSnapshot(getSnapshot()),
+    });
+    document.body.style.cursor = cursor;
+  }
+
+  function captureResultsGroup(id: string): LayoutDragItem[] | undefined {
+    const ids = selectedResultsIdsRef.current;
+    if (ids.length <= 1 || !ids.includes(id)) return undefined;
+    return ids.flatMap((itemId) => {
+      const rect = findResultsRect(resultsRef.current, itemId);
+      return rect
+        ? [
+            {
+              id: itemId,
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+            },
+          ]
+        : [];
+    });
+  }
+
+  function onLayoutGroupResizePointerDown(
+    e: React.PointerEvent<HTMLElement>,
+    handle: ResultsResizeHandle,
+    target: "results" | "quiz-ui",
+  ) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const ids =
+      target === "quiz-ui"
+        ? selectedQuizUiIdsRef.current
+        : selectedResultsIdsRef.current;
+    if (ids.length <= 1) return;
+    const pageWidth = resultsBaseWidthRef.current;
+    const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+    const items: LayoutDragItem[] =
+      target === "quiz-ui"
+        ? (() => {
+            const ui = resolvedQuizUi(
+              quizUiRef.current,
+              pageWidth,
+              viewportHeight,
+            );
+            return ids.flatMap((id) => {
+              const rect = findQuizUiRect(ui, id);
+              return rect ? [rect] : [];
+            });
+          })()
+        : ids.flatMap((id) => {
+            const rect = findResultsRect(resultsRef.current, id);
+            return rect
+              ? [
+                  {
+                    id,
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                  },
+                ]
+              : [];
+          });
+    if (items.length <= 1) return;
+    const bounds = boundingRectOf(items);
+    const cursor =
+      RESULTS_RESIZE_HANDLES.find((entry) => entry.handle === handle)?.cursor ??
+      "nwse-resize";
+    beginDrag({
+      type: "results-resize",
+      pointerId: e.pointerId,
+      boxId: items[0].id,
+      resultsItemKind: target === "quiz-ui" ? "quiz-ui" : "text",
+      lastX: e.clientX,
+      lastY: e.clientY,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+      originX: bounds.x,
+      originY: bounds.y,
+      originWidth: bounds.width,
+      originHeight: bounds.height,
+      resizeHandle: handle,
+      resizeCursor: cursor,
+      historyPushed: false,
+      preDragSnapshot: cloneSnapshot(getSnapshot()),
+      groupItems: items,
+      layoutTarget: target,
+    });
+    document.body.style.cursor = cursor;
   }
 
   function onResultsTextPointerDown(
@@ -5840,15 +7960,21 @@ export function CreateQuizEditor({
     if (target.closest("[data-results-resize]")) return;
     const inEditor = Boolean(target.closest("[data-results-editor]"));
     const alreadySelected = selectedResultsTextIdRef.current === textId;
+    const inGroup = (selectedResultsIdsRef.current.length > 1) &&
+      selectedResultsIdsRef.current.includes(textId);
 
     // Editing inside an already-selected box should not start a drag.
-    if (inEditor && alreadySelected) return;
+    if (inEditor && alreadySelected && !inGroup) return;
 
     e.preventDefault();
     const box = resultsRef.current.textBoxes.find((item) => item.id === textId);
     if (!box) return;
-    setSelectedResultsAxisId(null);
-    setSelectedResultsCompassId(null); setSelectedResultsBarId(null); setSelectedResultsImageId(null);
+    const groupItems = captureResultsGroup(textId);
+    if (!groupItems) {
+      setSelectedResultsAxisId(null);
+      setSelectedResultsCompassId(null); setSelectedResultsBarId(null); setSelectedResultsImageId(null);
+      setSelectedResultsIds([textId]);
+    }
     beginDrag({
       type: "results-text",
       pointerId: e.pointerId,
@@ -5865,6 +7991,8 @@ export function CreateQuizEditor({
       originHeight: box.height,
       historyPushed: false,
       preDragSnapshot: cloneSnapshot(getSnapshot()),
+      groupItems,
+      layoutTarget: "results",
     });
   }
 
@@ -5883,8 +8011,12 @@ export function CreateQuizEditor({
     e.preventDefault();
     const axis = resultsRef.current.axes.find((item) => item.id === axisId);
     if (!axis) return;
-    setSelectedResultsTextId(null);
-    setSelectedResultsCompassId(null); setSelectedResultsBarId(null); setSelectedResultsImageId(null);
+    const groupItems = captureResultsGroup(axisId);
+    if (!groupItems) {
+      setSelectedResultsTextId(null);
+      setSelectedResultsCompassId(null); setSelectedResultsBarId(null); setSelectedResultsImageId(null);
+      setSelectedResultsIds([axisId]);
+    }
     beginDrag({
       type: "results-text",
       pointerId: e.pointerId,
@@ -5901,6 +8033,8 @@ export function CreateQuizEditor({
       originHeight: axis.height,
       historyPushed: false,
       preDragSnapshot: cloneSnapshot(getSnapshot()),
+      groupItems,
+      layoutTarget: "results",
     });
   }
 
@@ -5919,10 +8053,14 @@ export function CreateQuizEditor({
     e.preventDefault();
     const compass = resultsRef.current.compasses.find((item) => item.id === compassId);
     if (!compass) return;
-    setSelectedResultsTextId(null);
-    setSelectedResultsAxisId(null);
-    setSelectedResultsBarId(null);
-    setSelectedResultsImageId(null);
+    const groupItems = captureResultsGroup(compassId);
+    if (!groupItems) {
+      setSelectedResultsTextId(null);
+      setSelectedResultsAxisId(null);
+      setSelectedResultsBarId(null);
+      setSelectedResultsImageId(null);
+      setSelectedResultsIds([compassId]);
+    }
     beginDrag({
       type: "results-text",
       pointerId: e.pointerId,
@@ -5939,6 +8077,8 @@ export function CreateQuizEditor({
       originHeight: compass.height,
       historyPushed: false,
       preDragSnapshot: cloneSnapshot(getSnapshot()),
+      groupItems,
+      layoutTarget: "results",
     });
   }
 
@@ -5957,10 +8097,14 @@ export function CreateQuizEditor({
     e.preventDefault();
     const bar = (resultsRef.current.bars ?? []).find((item) => item.id === barId);
     if (!bar) return;
-    setSelectedResultsTextId(null);
-    setSelectedResultsAxisId(null);
-    setSelectedResultsCompassId(null);
-    setSelectedResultsImageId(null);
+    const groupItems = captureResultsGroup(barId);
+    if (!groupItems) {
+      setSelectedResultsTextId(null);
+      setSelectedResultsAxisId(null);
+      setSelectedResultsCompassId(null);
+      setSelectedResultsImageId(null);
+      setSelectedResultsIds([barId]);
+    }
     beginDrag({
       type: "results-text",
       pointerId: e.pointerId,
@@ -5977,6 +8121,8 @@ export function CreateQuizEditor({
       originHeight: bar.height,
       historyPushed: false,
       preDragSnapshot: cloneSnapshot(getSnapshot()),
+      groupItems,
+      layoutTarget: "results",
     });
   }
 
@@ -5995,10 +8141,14 @@ export function CreateQuizEditor({
       (item) => item.id === imageId,
     );
     if (!image) return;
-    setSelectedResultsTextId(null);
-    setSelectedResultsAxisId(null);
-    setSelectedResultsCompassId(null);
-    setSelectedResultsBarId(null);
+    const groupItems = captureResultsGroup(imageId);
+    if (!groupItems) {
+      setSelectedResultsTextId(null);
+      setSelectedResultsAxisId(null);
+      setSelectedResultsCompassId(null);
+      setSelectedResultsBarId(null);
+      setSelectedResultsIds([imageId]);
+    }
     beginDrag({
       type: "results-text",
       pointerId: e.pointerId,
@@ -6015,6 +8165,8 @@ export function CreateQuizEditor({
       originHeight: image.height,
       historyPushed: false,
       preDragSnapshot: cloneSnapshot(getSnapshot()),
+      groupItems,
+      layoutTarget: "results",
     });
   }
 
@@ -6195,6 +8347,7 @@ export function CreateQuizEditor({
           height: RESULTS_TEXT_DEFAULT_HEIGHT,
           segments: emptyResultsSegments(),
           fontSize: RESULTS_FONT_SIZE_DEFAULT,
+          textColor: RESULTS_TEXT_COLOR_DEFAULT,
           textAlign: "left",
           showImage: false,
           image: "",
@@ -6209,6 +8362,7 @@ export function CreateQuizEditor({
     setSelectedResultsTextId(id);
     setSelectedResultsAxisId(null);
     setSelectedResultsCompassId(null); setSelectedResultsBarId(null); setSelectedResultsImageId(null);
+    setSelectedResultsIds([id]);
     setMenu(null);
   }
 
@@ -6253,6 +8407,9 @@ export function CreateQuizEditor({
           centerFontSize: RESULTS_FONT_SIZE_DEFAULT,
           leftFontSize: RESULTS_FONT_SIZE_DEFAULT,
           rightFontSize: RESULTS_FONT_SIZE_DEFAULT,
+          centerTextColor: RESULTS_TEXT_COLOR_DEFAULT,
+          leftTextColor: RESULTS_TEXT_COLOR_DEFAULT,
+          rightTextColor: RESULTS_TEXT_COLOR_DEFAULT,
           percentageVariableId: "",
           leftColor: RESULTS_AXIS_LEFT_COLOR,
           rightColor: RESULTS_AXIS_RIGHT_COLOR,
@@ -6265,6 +8422,7 @@ export function CreateQuizEditor({
     setSelectedResultsAxisId(id);
     setSelectedResultsTextId(null);
     setSelectedResultsCompassId(null); setSelectedResultsBarId(null); setSelectedResultsImageId(null);
+    setSelectedResultsIds([id]);
     setMenu(null);
   }
 
@@ -6313,6 +8471,10 @@ export function CreateQuizEditor({
           bottomFontSize: RESULTS_FONT_SIZE_DEFAULT,
           leftFontSize: RESULTS_FONT_SIZE_DEFAULT,
           rightFontSize: RESULTS_FONT_SIZE_DEFAULT,
+          topTextColor: RESULTS_TEXT_COLOR_DEFAULT,
+          bottomTextColor: RESULTS_TEXT_COLOR_DEFAULT,
+          leftTextColor: RESULTS_TEXT_COLOR_DEFAULT,
+          rightTextColor: RESULTS_TEXT_COLOR_DEFAULT,
           xVariableId: "",
           yVariableId: "",
           topLeftColor: RESULTS_COMPASS_TOP_LEFT_COLOR,
@@ -6327,6 +8489,7 @@ export function CreateQuizEditor({
     setSelectedResultsAxisId(null);
     setSelectedResultsBarId(null);
     setSelectedResultsImageId(null);
+    setSelectedResultsIds([id]);
     setMenu(null);
   }
 
@@ -6368,6 +8531,7 @@ export function CreateQuizEditor({
           height,
           segments: emptyResultsSegments(),
           fontSize: RESULTS_FONT_SIZE_DEFAULT,
+          textColor: RESULTS_TEXT_COLOR_DEFAULT,
           variableId: "",
           asPercent: false,
           min: 0,
@@ -6382,6 +8546,7 @@ export function CreateQuizEditor({
     setSelectedResultsAxisId(null);
     setSelectedResultsCompassId(null);
     setSelectedResultsImageId(null);
+    setSelectedResultsIds([id]);
     setMenu(null);
   }
 
@@ -6417,6 +8582,8 @@ export function CreateQuizEditor({
           width: size,
           height: size,
           src: "",
+          useFallback: true,
+          rules: [],
         },
       ],
     }));
@@ -6425,6 +8592,101 @@ export function CreateQuizEditor({
     setSelectedResultsAxisId(null);
     setSelectedResultsCompassId(null);
     setSelectedResultsBarId(null);
+    setSelectedResultsIds([id]);
+    setMenu(null);
+  }
+
+  function createQuizUiTextBox() {
+    if (!menu || menu.kind !== "quiz-ui-canvas") return;
+    pushHistory();
+    const id = crypto.randomUUID();
+    const pageWidth = resultsBaseWidthRef.current;
+    const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+    const position = clampResultsTextBoxPosition(
+      menu.contentX,
+      menu.contentY,
+      RESULTS_TEXT_DEFAULT_WIDTH,
+      pageWidth,
+      Math.max(
+        viewportHeight,
+        menu.contentY + RESULTS_TEXT_DEFAULT_HEIGHT + RESULTS_PAGE_BOTTOM_PAD,
+      ),
+      RESULTS_TEXT_DEFAULT_HEIGHT,
+    );
+    setQuizUi((prev) => {
+      const base = prev.customized
+        ? prev
+        : resolvedQuizUi(prev, pageWidth, viewportHeight);
+      return {
+        ...base,
+        customized: true,
+        textBoxes: [
+          ...(base.textBoxes ?? []),
+          createEmptyResultsTextBox(id, position.x, position.y),
+        ],
+      };
+    });
+    setSelectedQuizUiId(id);
+    setSelectedQuizUiIds([id]);
+    setMenu(null);
+  }
+
+  function createQuizUiImage() {
+    if (!menu || menu.kind !== "quiz-ui-canvas") return;
+    pushHistory();
+    const id = crypto.randomUUID();
+    const pageWidth = resultsBaseWidthRef.current;
+    const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+    const size = RESULTS_IMAGE_DEFAULT_SIZE;
+    const position = clampResultsTextBoxPosition(
+      menu.contentX,
+      menu.contentY,
+      size,
+      pageWidth,
+      Math.max(viewportHeight, menu.contentY + size + RESULTS_PAGE_BOTTOM_PAD),
+      size,
+    );
+    setQuizUi((prev) => {
+      const base = prev.customized
+        ? prev
+        : resolvedQuizUi(prev, pageWidth, viewportHeight);
+      return {
+        ...base,
+        customized: true,
+        images: [
+          ...(base.images ?? []),
+          createEmptyResultsImage(id, position.x, position.y),
+        ],
+      };
+    });
+    setSelectedQuizUiId(id);
+    setSelectedQuizUiIds([id]);
+    setMenu(null);
+  }
+
+  function deleteQuizUiTextBox() {
+    if (!menu || menu.kind !== "quiz-ui-text") return;
+    const textId = menu.textId;
+    pushHistory();
+    setQuizUi((prev) => ({
+      ...prev,
+      textBoxes: (prev.textBoxes ?? []).filter((box) => box.id !== textId),
+    }));
+    setSelectedQuizUiId((current) => (current === textId ? null : current));
+    setSelectedQuizUiIds((prev) => prev.filter((id) => id !== textId));
+    setMenu(null);
+  }
+
+  function deleteQuizUiImage() {
+    if (!menu || menu.kind !== "quiz-ui-image") return;
+    const imageId = menu.imageId;
+    pushHistory();
+    setQuizUi((prev) => ({
+      ...prev,
+      images: (prev.images ?? []).filter((item) => item.id !== imageId),
+    }));
+    setSelectedQuizUiId((current) => (current === imageId ? null : current));
+    setSelectedQuizUiIds((prev) => prev.filter((id) => id !== imageId));
     setMenu(null);
   }
 
@@ -6439,6 +8701,7 @@ export function CreateQuizEditor({
     if (selectedResultsTextIdRef.current === textId) {
       setSelectedResultsTextId(null);
     }
+    setSelectedResultsIds((prev) => prev.filter((id) => id !== textId));
     setMenu(null);
   }
 
@@ -6453,6 +8716,7 @@ export function CreateQuizEditor({
     if (selectedResultsAxisIdRef.current === axisId) {
       setSelectedResultsAxisId(null);
     }
+    setSelectedResultsIds((prev) => prev.filter((id) => id !== axisId));
     setMenu(null);
   }
 
@@ -6467,6 +8731,7 @@ export function CreateQuizEditor({
     if (selectedResultsCompassIdRef.current === compassId) {
       setSelectedResultsCompassId(null); setSelectedResultsBarId(null); setSelectedResultsImageId(null);
     }
+    setSelectedResultsIds((prev) => prev.filter((id) => id !== compassId));
     setMenu(null);
   }
 
@@ -6481,6 +8746,7 @@ export function CreateQuizEditor({
     if (selectedResultsBarIdRef.current === barId) {
       setSelectedResultsBarId(null);
     }
+    setSelectedResultsIds((prev) => prev.filter((id) => id !== barId));
     setMenu(null);
   }
 
@@ -6495,10 +8761,21 @@ export function CreateQuizEditor({
     if (selectedResultsImageIdRef.current === imageId) {
       setSelectedResultsImageId(null);
     }
+    setSelectedResultsIds((prev) => prev.filter((id) => id !== imageId));
     setMenu(null);
   }
 
   function updateResultsTextBox(id: string, patch: Partial<ResultsTextBox>) {
+    if (editorViewRef.current === "quiz-ui") {
+      setQuizUi((prev) => ({
+        ...prev,
+        customized: true,
+        textBoxes: (prev.textBoxes ?? []).map((box) =>
+          box.id === id ? { ...box, ...patch } : box,
+        ),
+      }));
+      return;
+    }
     setResults((prev) => ({
       ...prev,
       textBoxes: prev.textBoxes.map((box) =>
@@ -6535,6 +8812,16 @@ export function CreateQuizEditor({
   }
 
   function updateResultsImage(id: string, patch: Partial<ResultsImage>) {
+    if (editorViewRef.current === "quiz-ui") {
+      setQuizUi((prev) => ({
+        ...prev,
+        customized: true,
+        images: (prev.images ?? []).map((item) =>
+          item.id === id ? { ...item, ...patch } : item,
+        ),
+      }));
+      return;
+    }
     setResults((prev) => ({
       ...prev,
       images: (prev.images ?? []).map((item) =>
@@ -6543,9 +8830,64 @@ export function CreateQuizEditor({
     }));
   }
 
+  function updateResultsImageRules(
+    imageId: string,
+    updater: (rules: ResultsImageRule[]) => ResultsImageRule[],
+  ) {
+    const apply = (items: ResultsImage[]) =>
+      items.map((item) =>
+        item.id === imageId ? { ...item, rules: updater(item.rules) } : item,
+      );
+    if (editorViewRef.current === "quiz-ui") {
+      setQuizUi((prev) => ({
+        ...prev,
+        customized: true,
+        images: apply(prev.images ?? []),
+      }));
+      return;
+    }
+    setResults((prev) => ({
+      ...prev,
+      images: apply(prev.images ?? []),
+    }));
+  }
+
+  function addResultsImageRule() {
+    if (!selectedResultsImage) return;
+    pushHistory();
+    const defaultVarId = allVariables[0]?.id ?? "";
+    updateResultsImageRules(selectedResultsImage.id, (rules) => [
+      ...rules,
+      {
+        id: crypto.randomUUID(),
+        src: "",
+        conditions: [createDefaultCondition(defaultVarId)],
+      },
+    ]);
+  }
+
+  function moveResultsImageRule(ruleId: string, direction: -1 | 1) {
+    if (!selectedResultsImage) return;
+    const index = selectedResultsImage.rules.findIndex((rule) => rule.id === ruleId);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= selectedResultsImage.rules.length) {
+      return;
+    }
+    pushHistory();
+    updateResultsImageRules(selectedResultsImage.id, (rules) => {
+      const next = rules.slice();
+      const [rule] = next.splice(index, 1);
+      next.splice(nextIndex, 0, rule);
+      return next;
+    });
+  }
+
   function updateResultsSettings(
     patch: Partial<
-      Pick<ResultsDocument, "gridVisible" | "horizontalTicks" | "verticalTicks">
+      Pick<
+        ResultsDocument,
+        "backgroundColor" | "gridVisible" | "horizontalTicks" | "verticalTicks"
+      >
     >,
   ) {
     setResults((prev) => ({
@@ -6560,6 +8902,54 @@ export function CreateQuizEditor({
           ? normalizeGridTicks(patch.verticalTicks)
           : prev.verticalTicks,
     }));
+  }
+
+  function updateQuizUiSettings(
+    patch: Partial<
+      Pick<
+        QuizUiDocument,
+        "backgroundColor" | "gridVisible" | "horizontalTicks" | "verticalTicks"
+      >
+    >,
+  ) {
+    const pageWidth = resultsBaseWidthRef.current;
+    const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+    setQuizUi((prev) => {
+      const base = prev.customized
+        ? prev
+        : emptyQuizUiDocument(pageWidth, viewportHeight);
+      return {
+        ...base,
+        ...patch,
+        customized: true,
+        textBoxes: prev.textBoxes ?? [],
+        images: prev.images ?? [],
+        horizontalTicks:
+          patch.horizontalTicks !== undefined
+            ? normalizeGridTicks(patch.horizontalTicks)
+            : base.horizontalTicks,
+        verticalTicks:
+          patch.verticalTicks !== undefined
+            ? normalizeGridTicks(patch.verticalTicks)
+            : base.verticalTicks,
+      };
+    });
+  }
+
+  function updateQuizUiItem(
+    id: string,
+    patch: Partial<
+      Pick<QuizUiRect, "fontSize" | "backgroundColor" | "textColor">
+    >,
+  ) {
+    const pageWidth = resultsBaseWidthRef.current;
+    const viewportHeight = viewportRef.current?.clientHeight ?? 800;
+    setQuizUi((prev) => {
+      const base = prev.customized
+        ? prev
+        : resolvedQuizUi(prev, pageWidth, viewportHeight);
+      return patchQuizUiRect(base, id, patch);
+    });
   }
 
   function addVariableToSelectedResultsText() {
@@ -6630,6 +9020,9 @@ export function CreateQuizEditor({
         y: menu.worldY,
         kind: "question",
         question: "",
+        color:
+          localDefaultQuestionColorRef.current ??
+          defaultQuestionColorRef.current,
         answers: cloneAnswersWithNewIds(
           localDefaultAnswersRef.current.length > 0
             ? localDefaultAnswersRef.current
@@ -7018,6 +9411,17 @@ export function CreateQuizEditor({
     );
   }
 
+  function updateQuestionColor(color: string) {
+    if (!selectedId) return;
+    setBoxes((prev) =>
+      prev.map((box) =>
+        box.id === selectedId && box.kind === "question"
+          ? { ...box, color }
+          : box,
+      ),
+    );
+  }
+
   function addAnswer() {
     if (!selectedId) return;
     pushHistory();
@@ -7033,6 +9437,8 @@ export function CreateQuizEditor({
               id,
               name: nextAnsName(box.answers),
               effects: [],
+              color: defaultAnswerColorRef.current,
+              textColor: defaultAnswerTextColorRef.current,
             },
           ],
         };
@@ -7344,6 +9750,8 @@ export function CreateQuizEditor({
         id,
         name: nextAnsName(prev),
         effects: [],
+        color: defaultAnswerColorRef.current,
+        textColor: defaultAnswerTextColorRef.current,
       },
     ]);
     setFocusDefaultAnsId(id);
@@ -7417,6 +9825,8 @@ export function CreateQuizEditor({
         id,
         name: nextAnsName(prev),
         effects: [],
+        color: defaultAnswerColorRef.current,
+        textColor: defaultAnswerTextColorRef.current,
       },
     ]);
     setFocusLocalDefaultAnsId(id);
@@ -7496,17 +9906,90 @@ export function CreateQuizEditor({
     results.verticalTicks,
   );
 
-  const cursorClass = isResultsView
-    ? "cursor-default"
-    : dragKind === "pan"
-      ? "cursor-grabbing"
-      : dragKind === "box"
-        ? "cursor-move"
-        : "cursor-grab";
+  const cursorClass =
+    isResultsView || isQuizUiView
+      ? "cursor-default"
+      : dragKind === "pan"
+        ? "cursor-grabbing"
+        : dragKind === "box"
+          ? "cursor-move"
+          : "cursor-grab";
 
   const showProjectSettings = settingsPane === "project";
   const showResultsSettings = isResultsView && settingsPane === "results";
-  const showSectionSettings = !isResultsView && settingsPane === "section";
+  const showQuizUiSettings = isQuizUiView && settingsPane === "quiz-ui";
+  const showSectionSettings =
+    !isResultsView && !isQuizUiView && settingsPane === "section";
+  const quizUiPage = resolvedQuizUi(
+    quizUi,
+    resultsBaseWidth,
+    viewportSize.height || 800,
+  );
+  const quizUiPageHeight = quizUiContentHeight(
+    quizUiPage,
+    viewportSize.height || 800,
+  );
+  const quizUiGrid = resultsGridSteps(
+    resultsBaseWidth,
+    viewportSize.height || 800,
+    quizUiPage.horizontalTicks,
+    quizUiPage.verticalTicks,
+  );
+  const resultsPlayFit = resultsPreview
+    ? horizontalPlayFit(resultsHorizontalBounds(results), resultsBaseWidth)
+    : { scale: resultsScale, offsetX: 0 };
+  const quizUiPlayFit = quizUiPreview
+    ? horizontalPlayFit(quizUiHorizontalBounds(quizUiPage), resultsBaseWidth)
+    : { scale: resultsScale, offsetX: 0 };
+  const resultsPaintScale = resultsPreview ? resultsPlayFit.scale : resultsScale;
+  const resultsPaintOffsetX = resultsPreview ? resultsPlayFit.offsetX : 0;
+  const quizUiPaintScale = quizUiPreview ? quizUiPlayFit.scale : resultsScale;
+  const quizUiPaintOffsetX = quizUiPreview ? quizUiPlayFit.offsetX : 0;
+  const quizPlayPageHeight = Math.max(
+    viewportSize.height || 0,
+    quizUiContentHeight(quizUiPage, viewportSize.height || 800),
+  );
+  const quizPlayFit =
+    quizScreen?.kind === "question"
+      ? horizontalPlayFit(quizUiHorizontalBounds(quizUiPage), resultsBaseWidth)
+      : { scale: 1, offsetX: 0 };
+  const resultsMultiSelected = selectedResultsIds.length > 1;
+  const quizUiMultiSelected = selectedQuizUiIds.length > 1;
+  const selectedQuizUiChromeKind =
+    isQuizUiView && selectedQuizUiIds.length === 1
+      ? quizUiChromeKind(quizUiPage, selectedQuizUiIds[0])
+      : null;
+  const selectedQuizUiChromeRect =
+    selectedQuizUiChromeKind && selectedQuizUiIds[0]
+      ? findQuizUiChromeRect(quizUiPage, selectedQuizUiIds[0])
+      : null;
+  const resultsGroupBounds = resultsMultiSelected
+    ? boundingRectOf(
+        allResultsLayoutItems(results).filter((item) =>
+          selectedResultsIds.includes(item.id),
+        ),
+      )
+    : null;
+  const quizUiGroupBounds = quizUiMultiSelected
+    ? boundingRectOf(
+        quizUiRects(quizUiPage).filter((item) =>
+          selectedQuizUiIds.includes(item.id),
+        ),
+      )
+    : null;
+  function isResultsSelected(id: string) {
+    return (
+      selectedResultsIds.includes(id) ||
+      selectedResultsTextId === id ||
+      selectedResultsAxisId === id ||
+      selectedResultsCompassId === id ||
+      selectedResultsBarId === id ||
+      selectedResultsImageId === id
+    );
+  }
+  function isQuizUiSelected(id: string) {
+    return selectedQuizUiIds.includes(id) || selectedQuizUiId === id;
+  }
   const quizQuestionBox =
     quizScreen?.kind === "question" && quizGraph
       ? findQuestionBox(quizGraph, quizScreen)
@@ -7554,7 +10037,13 @@ export function CreateQuizEditor({
           <>
         <select
           aria-label="Active section"
-          value={isResultsView ? RESULTS_VIEW_ID : activeSectionId}
+          value={
+            isResultsView
+              ? RESULTS_VIEW_ID
+              : isQuizUiView
+                ? QUIZ_UI_VIEW_ID
+                : activeSectionId
+          }
           onChange={(e) => onSectionSelectChange(e.target.value)}
           className="pointer-events-auto max-w-[220px] cursor-pointer rounded-md border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black shadow-sm outline-none focus:border-[#2f5d76]"
         >
@@ -7563,6 +10052,7 @@ export function CreateQuizEditor({
               {section.name.trim() || "Untitled Section"}
             </option>
           ))}
+          <option value={QUIZ_UI_VIEW_ID}>Quiz UI</option>
           <option value={RESULTS_VIEW_ID}>Results</option>
         </select>
         <button
@@ -7579,43 +10069,62 @@ export function CreateQuizEditor({
 
       <main
         ref={viewportRef}
-        className={`absolute inset-0 bg-white ${
-          isResultsView
-            ? "overflow-x-hidden overflow-y-auto overscroll-y-contain"
+        className={`absolute inset-0 ${isResultsView || isQuizUiView ? "" : "bg-white"} ${
+          isResultsView || isQuizUiView
+            ? "overflow-x-clip overflow-y-auto overscroll-x-none overscroll-y-contain"
             : `touch-none overflow-hidden select-none ${transitionDraft ? "cursor-crosshair" : cursorClass}`
         }`}
+        style={
+          isResultsView
+            ? { backgroundColor: results.backgroundColor }
+            : isQuizUiView
+              ? { backgroundColor: quizUiPage.backgroundColor }
+              : undefined
+        }
         onContextMenu={
           isResultsView
             ? resultsPreview
               ? (e) => e.preventDefault()
               : onResultsContextMenu
-            : onContextMenu
+            : isQuizUiView
+              ? quizUiPreview
+                ? (e) => e.preventDefault()
+                : onQuizUiContextMenu
+              : onContextMenu
         }
         onPointerDown={
           isResultsView
             ? resultsPreview
               ? undefined
               : onResultsPointerDown
-            : onViewportPointerDown
+            : isQuizUiView
+              ? quizUiPreview
+                ? undefined
+                : onQuizUiPointerDown
+              : onViewportPointerDown
         }
       >
         {isResultsView ? (
           <div
-            className="relative bg-white"
+            className="relative overflow-x-clip overflow-y-clip"
             style={{
-              marginLeft: resultsLeftInset,
-              width: resultsAvailableWidth,
+              backgroundColor: results.backgroundColor,
+              marginLeft: resultsPreview ? 0 : resultsLeftInset,
+              width: resultsPreview ? resultsBaseWidth : resultsAvailableWidth,
               minHeight: "100%",
-              height: resultsPageHeight * resultsScale,
-              overflow: "hidden",
+              height: resultsPageHeight * resultsPaintScale,
             }}
           >
             <div
-              className="relative origin-top-left bg-white"
+              className="absolute top-0 left-0 origin-top-left"
               style={{
+                backgroundColor: results.backgroundColor,
                 width: resultsBaseWidth,
                 height: resultsPageHeight,
-                transform: `scale(${resultsScale})`,
+                transform: layoutPaintTransform(
+                  resultsPaintScale,
+                  resultsPaintOffsetX,
+                ),
               }}
             >
               {results.gridVisible && !resultsPreview && (
@@ -7633,13 +10142,14 @@ export function CreateQuizEditor({
                 />
               )}
               {results.axes.map((axis) => {
-                const selected = selectedResultsAxisId === axis.id;
+                const selected = isResultsSelected(axis.id);
                 const labelBoxes: {
                   key: "left" | "center" | "right";
                   align: "left" | "center" | "right";
                   segments: ResultsTextSegment[];
                   field: "leftSegments" | "segments" | "rightSegments";
                   fontSize: number;
+                  textColor: string;
                 }[] = [
                   {
                     key: "left",
@@ -7647,6 +10157,7 @@ export function CreateQuizEditor({
                     segments: axis.leftSegments,
                     field: "leftSegments",
                     fontSize: axis.leftFontSize,
+                    textColor: axis.leftTextColor,
                   },
                   {
                     key: "center",
@@ -7654,6 +10165,7 @@ export function CreateQuizEditor({
                     segments: axis.segments,
                     field: "segments",
                     fontSize: axis.centerFontSize,
+                    textColor: axis.centerTextColor,
                   },
                   {
                     key: "right",
@@ -7661,6 +10173,7 @@ export function CreateQuizEditor({
                     segments: axis.rightSegments,
                     field: "rightSegments",
                     fontSize: axis.rightFontSize,
+                    textColor: axis.rightTextColor,
                   },
                 ];
                 return (
@@ -7714,6 +10227,7 @@ export function CreateQuizEditor({
                               align={label.align}
                               preview={resultsPreview}
                               fontSize={label.fontSize}
+                              color={label.textColor}
                               onCheckpoint={pushHistory}
                               onChange={(segments) =>
                                 updateResultsAxis(axis.id, {
@@ -7803,6 +10317,7 @@ export function CreateQuizEditor({
                       </div>
                       {selected &&
                         !resultsPreview &&
+                        !resultsMultiSelected &&
                         RESULTS_RESIZE_HANDLES.map(
                           ({ handle, className, cursor }) => (
                             <div
@@ -7821,7 +10336,7 @@ export function CreateQuizEditor({
                 );
               })}
               {results.compasses.map((compass) => {
-                const selected = selectedResultsCompassId === compass.id;
+                const selected = isResultsSelected(compass.id);
                 const labelWidth = Math.max(
                   120,
                   Math.round(compass.width * 0.5),
@@ -7834,6 +10349,7 @@ export function CreateQuizEditor({
                     | "rightSegments",
                   segments: ResultsTextSegment[],
                   fontSize: number,
+                  textColor: string,
                 ) => (
                   <div
                     data-results-editor
@@ -7853,6 +10369,7 @@ export function CreateQuizEditor({
                       align="center"
                       preview={resultsPreview}
                       fontSize={fontSize}
+                      color={textColor}
                       onCheckpoint={pushHistory}
                       onChange={(next) =>
                         updateResultsCompass(compass.id, { [field]: next })
@@ -7894,7 +10411,7 @@ export function CreateQuizEditor({
                         width: labelWidth,
                       }}
                     >
-                      {labelEditor("topSegments", compass.topSegments, compass.topFontSize)}
+                      {labelEditor("topSegments", compass.topSegments, compass.topFontSize, compass.topTextColor)}
                     </MeasuredGrowBox>
                     <div
                       className="absolute left-1/2 -translate-x-1/2"
@@ -7908,6 +10425,7 @@ export function CreateQuizEditor({
                         "bottomSegments",
                         compass.bottomSegments,
                         compass.bottomFontSize,
+                        compass.bottomTextColor,
                       )}
                     </div>
                     <div
@@ -7922,6 +10440,7 @@ export function CreateQuizEditor({
                         "leftSegments",
                         compass.leftSegments,
                         compass.leftFontSize,
+                        compass.leftTextColor,
                       )}
                     </div>
                     <div
@@ -7936,6 +10455,7 @@ export function CreateQuizEditor({
                         "rightSegments",
                         compass.rightSegments,
                         compass.rightFontSize,
+                        compass.rightTextColor,
                       )}
                     </div>
                     <div
@@ -7970,6 +10490,7 @@ export function CreateQuizEditor({
                     </div>
                     {selected &&
                       !resultsPreview &&
+                      !resultsMultiSelected &&
                       RESULTS_RESIZE_HANDLES.map(
                         ({ handle, className, cursor }) => (
                           <div
@@ -7987,7 +10508,7 @@ export function CreateQuizEditor({
                 );
               })}
               {(results.bars ?? []).map((bar) => {
-                const selected = selectedResultsBarId === bar.id;
+                const selected = isResultsSelected(bar.id);
                 const variable = allVariables.find(
                   (item) => item.id === bar.variableId,
                 );
@@ -8031,6 +10552,7 @@ export function CreateQuizEditor({
                       align="center"
                       preview={resultsPreview}
                       fontSize={bar.fontSize}
+                      color={bar.textColor}
                       onCheckpoint={pushHistory}
                       onChange={(segments) =>
                         updateResultsBar(bar.id, { segments })
@@ -8189,6 +10711,7 @@ export function CreateQuizEditor({
                     )}
                     {selected &&
                       !resultsPreview &&
+                      !resultsMultiSelected &&
                       RESULTS_RESIZE_HANDLES.map(
                         ({ handle, className, cursor }) => (
                           <div
@@ -8206,7 +10729,7 @@ export function CreateQuizEditor({
                 );
               })}
               {results.textBoxes.map((box) => {
-                const selected = selectedResultsTextId === box.id;
+                const selected = isResultsSelected(box.id);
                 return (
                   <div
                     key={box.id}
@@ -8260,7 +10783,7 @@ export function CreateQuizEditor({
                           preview={resultsPreview}
                           selected={selected}
                           onResizePointerDown={
-                            resultsPreview
+                            resultsPreview || resultsMultiSelected
                               ? undefined
                               : (e, handle) =>
                                   onResultsResizePointerDown(
@@ -8290,6 +10813,7 @@ export function CreateQuizEditor({
                         align={box.textAlign}
                         preview={resultsPreview}
                         fontSize={box.fontSize}
+                        color={box.textColor}
                         onCheckpoint={pushHistory}
                         onChange={(segments) =>
                           updateResultsTextBox(box.id, { segments })
@@ -8298,6 +10822,7 @@ export function CreateQuizEditor({
                     </div>
                     {selected &&
                       !resultsPreview &&
+                      !resultsMultiSelected &&
                       RESULTS_RESIZE_HANDLES.map(({ handle, className, cursor }) => (
                         <div
                           key={handle}
@@ -8313,7 +10838,15 @@ export function CreateQuizEditor({
                 );
               })}
               {(results.images ?? []).map((image) => {
-                const selected = selectedResultsImageId === image.id;
+                const selected = isResultsSelected(image.id);
+                const src = resultsPreview
+                  ? resolveResultsImageSrc(
+                      image,
+                      quizScreen?.projectVariables ?? variables,
+                      quizScreen?.localVariables ?? localVariables,
+                    )
+                  : resultsImageEditorSrc(image);
+                if (resultsPreview && !src) return null;
                 return (
                   <div
                     key={image.id}
@@ -8337,11 +10870,11 @@ export function CreateQuizEditor({
                     }
                   >
                     <ResultsCanvasImage
-                      src={image.src}
+                      src={src}
                       preview={resultsPreview}
                       selected={selected}
                       onResizePointerDown={
-                        resultsPreview
+                        resultsPreview || resultsMultiSelected
                           ? undefined
                           : (e, handle) =>
                               onResultsResizePointerDown(e, image.id, handle)
@@ -8350,6 +10883,325 @@ export function CreateQuizEditor({
                   </div>
                 );
               })}
+              {resultsGroupBounds && !resultsPreview && (
+                <LayoutGroupOverlay
+                  bounds={resultsGroupBounds}
+                  onResizePointerDown={(e, handle) =>
+                    onLayoutGroupResizePointerDown(e, handle, "results")
+                  }
+                />
+              )}
+              {layoutMarquee && isResultsView && (
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute z-30 border border-[#2f5d76] bg-[#2f5d76]/15"
+                  style={{
+                    left: layoutMarquee.x,
+                    top: layoutMarquee.y,
+                    width: layoutMarquee.width,
+                    height: layoutMarquee.height,
+                  }}
+                />
+              )}
+            </div>
+          </div>
+        ) : isQuizUiView ? (
+          <div
+            className="relative overflow-x-clip overflow-y-clip"
+            style={{
+              backgroundColor: quizUiPage.backgroundColor,
+              marginLeft: quizUiPreview ? 0 : resultsLeftInset,
+              width: quizUiPreview ? resultsBaseWidth : resultsAvailableWidth,
+              minHeight: "100%",
+              height: quizUiPageHeight * quizUiPaintScale,
+            }}
+          >
+            <div
+              className="absolute top-0 left-0 origin-top-left"
+              style={{
+                backgroundColor: quizUiPage.backgroundColor,
+                width: resultsBaseWidth,
+                height: quizUiPageHeight,
+                transform: layoutPaintTransform(
+                  quizUiPaintScale,
+                  quizUiPaintOffsetX,
+                ),
+              }}
+            >
+              {quizUiPage.gridVisible && !quizUiPreview && (
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute inset-0"
+                  style={{
+                    backgroundImage: `
+                      linear-gradient(to right, rgba(47, 93, 118, 0.18) 1px, transparent 1px),
+                      linear-gradient(to bottom, rgba(47, 93, 118, 0.18) 1px, transparent 1px)
+                    `,
+                    backgroundSize: `${quizUiGrid.stepX}px ${quizUiGrid.stepY}px`,
+                    backgroundPosition: "0 0",
+                  }}
+                />
+              )}
+              <QuizUiEditorItem
+                rect={quizUiPage.question}
+                selected={isQuizUiSelected(quizUiPage.question.id)}
+                preview={quizUiPreview}
+                className="flex items-center justify-center overflow-hidden rounded-2xl px-8 py-10 text-center leading-relaxed font-medium shadow-sm"
+                style={{
+                  ...defaultQuestionPaint,
+                  fontSize: quizUiChromeFontSize(quizUiPage.question, "question"),
+                }}
+                onPointerDown={(e) =>
+                  onQuizUiItemPointerDown(e, quizUiPage.question.id)
+                }
+                onResizePointerDown={
+                  quizUiMultiSelected
+                    ? undefined
+                    : (e, handle) =>
+                        onQuizUiResizePointerDown(e, quizUiPage.question.id, handle)
+                }
+              >
+                Placeholder Question
+              </QuizUiEditorItem>
+              {quizUiPage.answers.map((answer, index) => (
+                <QuizUiEditorItem
+                  key={answer.id}
+                  rect={answer}
+                  selected={isQuizUiSelected(answer.id)}
+                  preview={quizUiPreview}
+                  className="flex items-center justify-center overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm"
+                  style={{
+                    ...answerBoxPaint(
+                      placeholderAnswers[index]?.color ?? defaultAnswerColor,
+                      placeholderAnswers[index]?.textColor ?? defaultAnswerTextColor,
+                    ),
+                    fontSize: quizUiChromeFontSize(answer, "answer"),
+                  }}
+                  onPointerDown={(e) => onQuizUiItemPointerDown(e, answer.id)}
+                  onResizePointerDown={
+                    quizUiMultiSelected
+                      ? undefined
+                      : (e, handle) =>
+                          onQuizUiResizePointerDown(e, answer.id, handle)
+                  }
+                >
+                  Placeholder Answer
+                </QuizUiEditorItem>
+              ))}
+              <QuizUiEditorItem
+                rect={quizUiPage.nextButton}
+                selected={isQuizUiSelected(quizUiPage.nextButton.id)}
+                preview={quizUiPreview}
+                className="flex items-center justify-center overflow-hidden rounded-xl px-4 py-3 text-center font-medium opacity-40 shadow-sm"
+                style={quizUiButtonPaint(quizUiPage.nextButton, "next")}
+                onPointerDown={(e) =>
+                  onQuizUiItemPointerDown(e, quizUiPage.nextButton.id)
+                }
+                onResizePointerDown={
+                  quizUiMultiSelected
+                    ? undefined
+                    : (e, handle) =>
+                        onQuizUiResizePointerDown(
+                          e,
+                          quizUiPage.nextButton.id,
+                          handle,
+                        )
+                }
+              >
+                Next
+              </QuizUiEditorItem>
+              <QuizUiEditorItem
+                rect={quizUiPage.backButton}
+                selected={isQuizUiSelected(quizUiPage.backButton.id)}
+                preview={quizUiPreview}
+                className="flex items-center justify-center overflow-hidden rounded-xl border border-black/15 px-4 py-3 text-center font-medium opacity-40 shadow-sm"
+                style={quizUiButtonPaint(quizUiPage.backButton, "back")}
+                onPointerDown={(e) =>
+                  onQuizUiItemPointerDown(e, quizUiPage.backButton.id)
+                }
+                onResizePointerDown={
+                  quizUiMultiSelected
+                    ? undefined
+                    : (e, handle) =>
+                        onQuizUiResizePointerDown(
+                          e,
+                          quizUiPage.backButton.id,
+                          handle,
+                        )
+                }
+              >
+                Back
+              </QuizUiEditorItem>
+              {(quizUiPage.textBoxes ?? []).map((box) => {
+                const selected = isQuizUiSelected(box.id);
+                return (
+                  <div
+                    key={box.id}
+                    data-quiz-ui-item
+                    className={`absolute flex flex-col overflow-visible rounded-lg ${
+                      quizUiPreview
+                        ? "border-0 bg-transparent p-2"
+                        : `cursor-move border bg-white p-2 shadow-sm ${
+                            selected
+                              ? "border-[#2f5d76] ring-2 ring-[#2f5d76]/ring-offset-1"
+                              : "border-black/15"
+                          }`
+                    }`}
+                    style={{
+                      left: box.x,
+                      top: box.y,
+                      width: box.width,
+                      height: box.height,
+                    }}
+                    onPointerDown={
+                      quizUiPreview
+                        ? undefined
+                        : (e) => onQuizUiItemPointerDown(e, box.id)
+                    }
+                    onContextMenu={
+                      quizUiPreview
+                        ? undefined
+                        : (e) => onQuizUiTextContextMenu(e, box.id)
+                    }
+                  >
+                    {box.showImage && (
+                      <div
+                        className="absolute"
+                        style={{
+                          left: box.imageOffsetX,
+                          width: box.imageWidth,
+                          height: box.imageHeight,
+                          ...(box.imageAbove
+                            ? {
+                                bottom: "100%",
+                                marginBottom: RESULTS_TEXT_IMAGE_GAP,
+                              }
+                            : {
+                                top: "100%",
+                                marginTop: RESULTS_TEXT_IMAGE_GAP,
+                              }),
+                        }}
+                      >
+                        <ResultsCanvasImage
+                          src={box.image}
+                          preview={quizUiPreview}
+                          selected={selected}
+                          onResizePointerDown={
+                            quizUiPreview || quizUiMultiSelected
+                              ? undefined
+                              : (e, handle) =>
+                                  onQuizUiResizePointerDown(
+                                    e,
+                                    box.id,
+                                    handle,
+                                    "text-image",
+                                  )
+                          }
+                        />
+                      </div>
+                    )}
+                    <div
+                      className={`min-h-0 flex-1 overflow-hidden ${
+                        quizUiPreview
+                          ? "cursor-default"
+                          : selected
+                            ? "cursor-text"
+                            : "cursor-move"
+                      }`}
+                    >
+                      <ResultsRichTextEditor
+                        segments={box.segments}
+                        variables={allVariables}
+                        compact
+                        align={box.textAlign}
+                        preview={quizUiPreview}
+                        fontSize={box.fontSize}
+                        color={box.textColor}
+                        onCheckpoint={pushHistory}
+                        onChange={(segments) =>
+                          updateResultsTextBox(box.id, { segments })
+                        }
+                      />
+                    </div>
+                    {selected &&
+                      !quizUiPreview &&
+                      !quizUiMultiSelected &&
+                      RESULTS_RESIZE_HANDLES.map(({ handle, className, cursor }) => (
+                        <div
+                          key={handle}
+                          data-results-resize={handle}
+                          className={`absolute z-10 ${className}`}
+                          style={{ cursor }}
+                          onPointerDown={(e) =>
+                            onQuizUiResizePointerDown(e, box.id, handle)
+                          }
+                        />
+                      ))}
+                  </div>
+                );
+              })}
+              {(quizUiPage.images ?? []).map((image) => {
+                const selected = isQuizUiSelected(image.id);
+                const src = quizUiPreview
+                  ? resolveResultsImageSrc(image, variables, localVariables)
+                  : resultsImageEditorSrc(image);
+                if (quizUiPreview && !src) return null;
+                return (
+                  <div
+                    key={image.id}
+                    data-quiz-ui-item
+                    className={`absolute ${quizUiPreview ? "" : "cursor-move"}`}
+                    style={{
+                      left: image.x,
+                      top: image.y,
+                      width: image.width,
+                      height: image.height,
+                    }}
+                    onPointerDown={
+                      quizUiPreview
+                        ? undefined
+                        : (e) => onQuizUiItemPointerDown(e, image.id)
+                    }
+                    onContextMenu={
+                      quizUiPreview
+                        ? undefined
+                        : (e) => onQuizUiImageContextMenu(e, image.id)
+                    }
+                  >
+                    <ResultsCanvasImage
+                      src={src}
+                      preview={quizUiPreview}
+                      selected={selected}
+                      onResizePointerDown={
+                        quizUiPreview || quizUiMultiSelected
+                          ? undefined
+                          : (e, handle) =>
+                              onQuizUiResizePointerDown(e, image.id, handle)
+                      }
+                    />
+                  </div>
+                );
+              })}
+              {quizUiGroupBounds && !quizUiPreview && (
+                <LayoutGroupOverlay
+                  bounds={quizUiGroupBounds}
+                  onResizePointerDown={(e, handle) =>
+                    onLayoutGroupResizePointerDown(e, handle, "quiz-ui")
+                  }
+                />
+              )}
+              {layoutMarquee && isQuizUiView && (
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute z-30 border border-[#2f5d76] bg-[#2f5d76]/15"
+                  style={{
+                    left: layoutMarquee.x,
+                    top: layoutMarquee.y,
+                    width: layoutMarquee.width,
+                    height: layoutMarquee.height,
+                  }}
+                />
+              )}
             </div>
           </div>
         ) : (
@@ -8511,7 +11363,9 @@ export function CreateQuizEditor({
                   ? "bg-[#9a9a9a] text-white"
                   : box.kind === "section-changer"
                     ? "bg-[#4f6bc4] text-white"
-                    : "bg-black text-white";
+                    : "";
+            const questionPaint =
+              box.kind === "question" ? questionBoxPaint(box.color) : null;
 
             return (
               <div
@@ -8531,6 +11385,7 @@ export function CreateQuizEditor({
                   paddingBottom: PAD_Y / 2,
                   transform: "translate(-50%, -50%)",
                   WebkitUserDrag: "none",
+                  ...questionPaint,
                 } as React.CSSProperties}
                 onPointerDown={(e) => onBoxPointerDown(e, box.id)}
                 onContextMenu={(e) => onBoxContextMenu(e, box.id)}
@@ -8652,6 +11507,43 @@ export function CreateQuizEditor({
               >
                 Delete
               </button>
+            ) : menu.kind === "quiz-ui-canvas" ? (
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
+                  onClick={createQuizUiTextBox}
+                >
+                  Create Text Box
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
+                  onClick={createQuizUiImage}
+                >
+                  Create Image
+                </button>
+              </>
+            ) : menu.kind === "quiz-ui-text" ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
+                onClick={deleteQuizUiTextBox}
+              >
+                Delete
+              </button>
+            ) : menu.kind === "quiz-ui-image" ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="block w-full cursor-pointer border-none bg-transparent px-4 py-2 text-left text-sm text-black hover:bg-black/5"
+                onClick={deleteQuizUiImage}
+              >
+                Delete
+              </button>
             ) : menu.kind === "canvas" ? (
               <>
                 <button
@@ -8770,6 +11662,14 @@ export function CreateQuizEditor({
                 updateResultsTextBox(selectedResultsText.id, { fontSize })
               }
             />
+            <ResultsColorPicker
+              label="Text color"
+              value={selectedResultsText.textColor}
+              onCheckpoint={pushHistory}
+              onChange={(textColor) =>
+                updateResultsTextBox(selectedResultsText.id, { textColor })
+              }
+            />
           </section>
           <section className="mt-6">
             <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
@@ -8816,6 +11716,7 @@ export function CreateQuizEditor({
                 variables={allVariables}
                 align={selectedResultsText.textAlign}
                 fontSize={selectedResultsText.fontSize}
+                color={selectedResultsText.textColor}
                 onCheckpoint={pushHistory}
                 onChange={(segments) =>
                   updateResultsTextBox(selectedResultsText.id, { segments })
@@ -8922,11 +11823,20 @@ export function CreateQuizEditor({
             onClick={() => {
               pushHistory();
               const id = selectedResultsText.id;
-              setResults((prev) => ({
-                ...prev,
-                textBoxes: prev.textBoxes.filter((box) => box.id !== id),
-              }));
-              setSelectedResultsTextId(null);
+              if (editorView === "quiz-ui") {
+                setQuizUi((prev) => ({
+                  ...prev,
+                  textBoxes: (prev.textBoxes ?? []).filter((box) => box.id !== id),
+                }));
+                setSelectedQuizUiId(null);
+                setSelectedQuizUiIds((prev) => prev.filter((item) => item !== id));
+              } else {
+                setResults((prev) => ({
+                  ...prev,
+                  textBoxes: prev.textBoxes.filter((box) => box.id !== id),
+                }));
+                setSelectedResultsTextId(null);
+              }
             }}
             className="mt-8 w-full cursor-pointer rounded-lg border border-[#c0392b] bg-[#c0392b] px-3 py-2 text-sm font-medium text-white hover:bg-[#a93226]"
           >
@@ -9081,14 +11991,26 @@ export function CreateQuizEditor({
                 })
               }
             />
+            <ResultsColorPicker
+              label="All label text color"
+              value={selectedResultsAxis.centerTextColor}
+              onCheckpoint={pushHistory}
+              onChange={(textColor) =>
+                updateResultsAxis(selectedResultsAxis.id, {
+                  centerTextColor: textColor,
+                  leftTextColor: textColor,
+                  rightTextColor: textColor,
+                })
+              }
+            />
           </section>
           {(
             [
-              ["leftSegments", "Left Label", "left", "leftFontSize"],
-              ["segments", "Center Label", "center", "centerFontSize"],
-              ["rightSegments", "Right Label", "right", "rightFontSize"],
+              ["leftSegments", "Left Label", "left", "leftFontSize", "leftTextColor"],
+              ["segments", "Center Label", "center", "centerFontSize", "centerTextColor"],
+              ["rightSegments", "Right Label", "right", "rightFontSize", "rightTextColor"],
             ] as const
-          ).map(([field, title, align, fontField]) => (
+          ).map(([field, title, align, fontField, colorField]) => (
             <section key={field} className="mt-6">
               <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
                 {title}
@@ -9102,12 +12024,23 @@ export function CreateQuizEditor({
                   })
                 }
               />
+              <ResultsColorPicker
+                label="Text color"
+                value={selectedResultsAxis[colorField]}
+                onCheckpoint={pushHistory}
+                onChange={(textColor) =>
+                  updateResultsAxis(selectedResultsAxis.id, {
+                    [colorField]: textColor,
+                  })
+                }
+              />
               <div className="mt-3">
                 <ResultsRichTextEditor
                   segments={selectedResultsAxis[field]}
                   variables={allVariables}
                   align={align}
                   fontSize={selectedResultsAxis[fontField]}
+                  color={selectedResultsAxis[colorField]}
                   onCheckpoint={pushHistory}
                   onChange={(segments) =>
                     updateResultsAxis(selectedResultsAxis.id, {
@@ -9260,15 +12193,28 @@ export function CreateQuizEditor({
                 })
               }
             />
+            <ResultsColorPicker
+              label="All label text color"
+              value={selectedResultsCompass.topTextColor}
+              onCheckpoint={pushHistory}
+              onChange={(textColor) =>
+                updateResultsCompass(selectedResultsCompass.id, {
+                  topTextColor: textColor,
+                  bottomTextColor: textColor,
+                  leftTextColor: textColor,
+                  rightTextColor: textColor,
+                })
+              }
+            />
           </section>
           {(
             [
-              ["topSegments", "Top Label", "topFontSize"],
-              ["bottomSegments", "Bottom Label", "bottomFontSize"],
-              ["leftSegments", "Left Label", "leftFontSize"],
-              ["rightSegments", "Right Label", "rightFontSize"],
+              ["topSegments", "Top Label", "topFontSize", "topTextColor"],
+              ["bottomSegments", "Bottom Label", "bottomFontSize", "bottomTextColor"],
+              ["leftSegments", "Left Label", "leftFontSize", "leftTextColor"],
+              ["rightSegments", "Right Label", "rightFontSize", "rightTextColor"],
             ] as const
-          ).map(([field, title, fontField]) => (
+          ).map(([field, title, fontField, colorField]) => (
             <section key={field} className="mt-6">
               <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
                 {title}
@@ -9282,12 +12228,23 @@ export function CreateQuizEditor({
                   })
                 }
               />
+              <ResultsColorPicker
+                label="Text color"
+                value={selectedResultsCompass[colorField]}
+                onCheckpoint={pushHistory}
+                onChange={(textColor) =>
+                  updateResultsCompass(selectedResultsCompass.id, {
+                    [colorField]: textColor,
+                  })
+                }
+              />
               <div className="mt-3">
                 <ResultsRichTextEditor
                   segments={selectedResultsCompass[field]}
                   variables={allVariables}
                   align="center"
                   fontSize={selectedResultsCompass[fontField]}
+                  color={selectedResultsCompass[colorField]}
                   onCheckpoint={pushHistory}
                   onChange={(segments) =>
                     updateResultsCompass(selectedResultsCompass.id, {
@@ -9419,6 +12376,14 @@ export function CreateQuizEditor({
                 updateResultsBar(selectedResultsBar.id, { fontSize })
               }
             />
+            <ResultsColorPicker
+              label="Text color"
+              value={selectedResultsBar.textColor}
+              onCheckpoint={pushHistory}
+              onChange={(textColor) =>
+                updateResultsBar(selectedResultsBar.id, { textColor })
+              }
+            />
           </section>
           <section className="mt-6">
             <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
@@ -9430,6 +12395,7 @@ export function CreateQuizEditor({
                 variables={allVariables}
                 align="center"
                 fontSize={selectedResultsBar.fontSize}
+                color={selectedResultsBar.textColor}
                 onCheckpoint={pushHistory}
                 onChange={(segments) =>
                   updateResultsBar(selectedResultsBar.id, { segments })
@@ -9506,32 +12472,254 @@ export function CreateQuizEditor({
           <h1 className="text-lg font-semibold text-black">Image</h1>
           <section className="mt-6">
             <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
-              File
+              Condition images
             </h2>
-            <AxisImagePicker
-              label="Image"
-              value={selectedResultsImage.src}
-              onCheckpoint={pushHistory}
-              onChange={(src) =>
-                updateResultsImage(selectedResultsImage.id, { src })
-              }
-            />
+            <p className="mt-2 text-xs leading-relaxed text-black/55">
+              Rules are checked from top to bottom. The first true condition set
+              chooses the image.
+            </p>
+            <div className="mt-3 flex flex-col gap-4">
+              {selectedResultsImage.rules.map((rule, index) => (
+                <div
+                  key={rule.id}
+                  className="rounded-lg border border-black/10 bg-white p-3"
+                >
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold tracking-wide text-black/60 uppercase">
+                      Rule {index + 1}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        aria-label="Move rule up"
+                        disabled={index === 0}
+                        onClick={() => moveResultsImageRule(rule.id, -1)}
+                        className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-white text-sm leading-none text-black hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Move rule down"
+                        disabled={index === selectedResultsImage.rules.length - 1}
+                        onClick={() => moveResultsImageRule(rule.id, 1)}
+                        className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-white text-sm leading-none text-black hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Remove rule"
+                        onClick={() => {
+                          pushHistory();
+                          updateResultsImageRules(selectedResultsImage.id, (rules) =>
+                            rules.filter((item) => item.id !== rule.id),
+                          );
+                        }}
+                        className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-white text-base leading-none text-black hover:bg-black/5"
+                      >
+                        −
+                      </button>
+                    </div>
+                  </div>
+                  <AxisImagePicker
+                    label="Image"
+                    value={rule.src}
+                    onCheckpoint={pushHistory}
+                    onChange={(src) =>
+                      updateResultsImageRules(selectedResultsImage.id, (rules) =>
+                        rules.map((item) =>
+                          item.id === rule.id ? { ...item, src } : item,
+                        ),
+                      )
+                    }
+                  />
+                  <div className="mt-3">
+                    <h3 className="text-xs font-semibold tracking-wide text-black/60 uppercase">
+                      Conditions
+                    </h3>
+                    <ConditionsEditor
+                      conditions={rule.conditions}
+                      variables={allVariables}
+                      onCheckpoint={pushHistory}
+                      onAddCondition={() => {
+                        pushHistory();
+                        const defaultVarId = allVariables[0]?.id ?? "";
+                        updateResultsImageRules(selectedResultsImage.id, (rules) =>
+                          rules.map((item) =>
+                            item.id === rule.id
+                              ? {
+                                  ...item,
+                                  conditions: [
+                                    ...item.conditions,
+                                    createDefaultCondition(defaultVarId),
+                                  ],
+                                }
+                              : item,
+                          ),
+                        );
+                      }}
+                      onUpdateCondition={(conditionId, patch) =>
+                        updateResultsImageRules(selectedResultsImage.id, (rules) =>
+                          rules.map((item) =>
+                            item.id === rule.id
+                              ? {
+                                  ...item,
+                                  conditions: item.conditions.map((condition) =>
+                                    condition.id === conditionId
+                                      ? { ...condition, ...patch }
+                                      : condition,
+                                  ),
+                                }
+                              : item,
+                          ),
+                        )
+                      }
+                      onRemoveCondition={(conditionId) => {
+                        pushHistory();
+                        updateResultsImageRules(selectedResultsImage.id, (rules) =>
+                          rules.map((item) =>
+                            item.id === rule.id
+                              ? {
+                                  ...item,
+                                  conditions: item.conditions.filter(
+                                    (condition) => condition.id !== conditionId,
+                                  ),
+                                }
+                              : item,
+                          ),
+                        );
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={addResultsImageRule}
+              className="mt-3 cursor-pointer rounded-lg border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black hover:bg-black/5"
+            >
+              Add condition image
+            </button>
+          </section>
+          <section className="mt-8">
+            <label className="flex cursor-pointer items-start gap-2 text-sm text-black">
+              <input
+                type="checkbox"
+                checked={selectedResultsImage.useFallback}
+                aria-label="Use a default image if no conditions match"
+                onChange={(e) => {
+                  pushHistory();
+                  updateResultsImage(selectedResultsImage.id, {
+                    useFallback: e.target.checked,
+                  });
+                }}
+                className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer"
+              />
+              <span>
+                Use a default image if no conditions are true
+              </span>
+            </label>
+            {selectedResultsImage.useFallback ? (
+              <AxisImagePicker
+                label="Default image"
+                value={selectedResultsImage.src}
+                onCheckpoint={pushHistory}
+                onChange={(src) =>
+                  updateResultsImage(selectedResultsImage.id, { src })
+                }
+              />
+            ) : null}
           </section>
           <button
             type="button"
             onClick={() => {
               pushHistory();
               const id = selectedResultsImage.id;
-              setResults((prev) => ({
-                ...prev,
-                images: (prev.images ?? []).filter((item) => item.id !== id),
-              }));
-              setSelectedResultsImageId(null);
+              if (editorView === "quiz-ui") {
+                setQuizUi((prev) => ({
+                  ...prev,
+                  images: (prev.images ?? []).filter((item) => item.id !== id),
+                }));
+                setSelectedQuizUiId(null);
+                setSelectedQuizUiIds((prev) => prev.filter((item) => item !== id));
+              } else {
+                setResults((prev) => ({
+                  ...prev,
+                  images: (prev.images ?? []).filter((item) => item.id !== id),
+                }));
+                setSelectedResultsImageId(null);
+              }
             }}
             className="mt-8 w-full cursor-pointer rounded-lg border border-[#c0392b] bg-[#c0392b] px-3 py-2 text-sm font-medium text-white hover:bg-[#a93226]"
           >
             Delete Image
           </button>
+        </aside>
+      )}
+
+      {selectedQuizUiChromeKind &&
+        selectedQuizUiChromeRect &&
+        !hideEditorChrome && (
+        <aside
+          className="absolute top-0 bottom-0 left-0 z-30 flex w-[320px] flex-col overflow-y-auto border-r border-black/10 bg-[#fafafa] p-5 shadow-[4px_0_24px_rgba(0,0,0,0.06)]"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <h1 className="text-lg font-semibold text-black">
+            {quizUiChromeTitle(selectedQuizUiChromeKind)}
+          </h1>
+          <section className="mt-6">
+            <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+              Font Size
+            </h2>
+            <FontSizeControl
+              value={quizUiChromeFontSize(
+                selectedQuizUiChromeRect,
+                selectedQuizUiChromeKind,
+              )}
+              onCheckpoint={pushHistory}
+              onChange={(fontSize) =>
+                updateQuizUiItem(selectedQuizUiChromeRect.id, { fontSize })
+              }
+            />
+          </section>
+          {(selectedQuizUiChromeKind === "next" ||
+            selectedQuizUiChromeKind === "back") && (
+            <section className="mt-6">
+              <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                Colors
+              </h2>
+              <ResultsColorPicker
+                label="Button color"
+                value={
+                  quizUiButtonPaint(
+                    selectedQuizUiChromeRect,
+                    selectedQuizUiChromeKind,
+                  ).backgroundColor
+                }
+                onCheckpoint={pushHistory}
+                onChange={(backgroundColor) =>
+                  updateQuizUiItem(selectedQuizUiChromeRect.id, {
+                    backgroundColor,
+                  })
+                }
+              />
+              <ResultsColorPicker
+                label="Text color"
+                value={
+                  quizUiButtonPaint(
+                    selectedQuizUiChromeRect,
+                    selectedQuizUiChromeKind,
+                  ).color
+                }
+                onCheckpoint={pushHistory}
+                onChange={(textColor) =>
+                  updateQuizUiItem(selectedQuizUiChromeRect.id, { textColor })
+                }
+              />
+            </section>
+          )}
         </aside>
       )}
 
@@ -9553,6 +12741,12 @@ export function CreateQuizEditor({
               placeholder="Type your question…"
               className="min-h-32 w-full resize-y rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
               autoFocus
+            />
+            <ResultsColorPicker
+              label="Question box color"
+              value={selectedQuestion.color}
+              onCheckpoint={pushHistory}
+              onChange={updateQuestionColor}
             />
           </div>
 
@@ -9684,15 +12878,20 @@ export function CreateQuizEditor({
         </aside>
       )}
 
-      {(resultsPreview || quizScreen || publishOpen) && (
+      {(resultsPreview || quizUiPreview || quizScreen || publishOpen) && (
         <button
           type="button"
           aria-label={
-            quizScreen ? "Exit quiz" : publishOpen ? "Back to editor" : "Exit preview"
+            quizScreen
+              ? "Exit quiz"
+              : publishOpen
+                ? "Back to editor"
+                : "Exit preview"
           }
           onClick={() => {
             if (quizScreen) exitQuizPlay();
             else if (publishOpen) setPublishOpen(false);
+            else if (quizUiPreview) exitQuizUiPreview();
             else exitResultsPreview();
           }}
           className="absolute top-4 right-4 z-[90] cursor-pointer rounded-md border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black shadow-sm hover:bg-[#f5f5f5]"
@@ -9837,11 +13036,13 @@ export function CreateQuizEditor({
             </Link>
             <div className="flex items-start justify-between gap-2">
               <h1 className="text-lg font-semibold text-black">
-                {showResultsSettings
-                  ? "Results Settings"
-                  : showSectionSettings
-                    ? "Section Settings"
-                    : "Project Settings"}
+                {showQuizUiSettings
+                  ? "Quiz UI Settings"
+                  : showResultsSettings
+                    ? "Results Settings"
+                    : showSectionSettings
+                      ? "Section Settings"
+                      : "Project Settings"}
               </h1>
               {isResultsView ? (
                 <button
@@ -9855,6 +13056,20 @@ export function CreateQuizEditor({
                 >
                   {showProjectSettings
                     ? "Switch To Results Settings"
+                    : "Switch To Project Settings"}
+                </button>
+              ) : isQuizUiView ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSettingsPane((pane) =>
+                      pane === "project" ? "quiz-ui" : "project",
+                    )
+                  }
+                  className="shrink-0 cursor-pointer border-none bg-transparent p-0 text-left text-xs font-medium leading-snug text-[#2f5d76] hover:text-[#244a5e]"
+                >
+                  {showProjectSettings
+                    ? "Switch To Quiz UI Settings"
                     : "Switch To Project Settings"}
                 </button>
               ) : (
@@ -10005,6 +13220,44 @@ export function CreateQuizEditor({
 
                 <section className="mt-8">
                   <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                    Default Question Color
+                  </h2>
+                  <ResultsColorPicker
+                    label="Question box color"
+                    value={defaultQuestionColor}
+                    onCheckpoint={pushHistory}
+                    onChange={setDefaultQuestionColor}
+                  />
+                </section>
+
+                <section className="mt-8">
+                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                    Default Answer Color
+                  </h2>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <span className="text-sm text-black/70">Button</span>
+                    <ResultsColorPicker
+                      compact
+                      variant="fill"
+                      label="Button color"
+                      value={defaultAnswerColor}
+                      onCheckpoint={pushHistory}
+                      onChange={setDefaultAnswerColor}
+                    />
+                    <span className="ml-2 text-sm text-black/70">Text</span>
+                    <ResultsColorPicker
+                      compact
+                      variant="text"
+                      label="Text color"
+                      value={defaultAnswerTextColor}
+                      onCheckpoint={pushHistory}
+                      onChange={setDefaultAnswerTextColor}
+                    />
+                  </div>
+                </section>
+
+                <section className="mt-8">
+                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
                     Default Question Answers
                   </h2>
                   <AnswersEditor
@@ -10024,8 +13277,15 @@ export function CreateQuizEditor({
                 <section className="mt-8">
                   <button
                     type="button"
+                    onClick={openQuizUiView}
+                    className="w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-white px-3 py-2 text-sm font-medium text-[#2f5d76] hover:bg-[#2f5d76]/5"
+                  >
+                    Edit Quiz UI
+                  </button>
+                  <button
+                    type="button"
                     onClick={startQuizPlay}
-                    className="w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-[#2f5d76] px-3 py-2 text-sm font-medium text-white hover:bg-[#244a5e]"
+                    className="mt-3 w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-[#2f5d76] px-3 py-2 text-sm font-medium text-white hover:bg-[#244a5e]"
                   >
                     Preview Quiz
                   </button>
@@ -10042,100 +13302,25 @@ export function CreateQuizEditor({
                 </section>
               </>
             ) : showResultsSettings ? (
-              <>
-                <section className="mt-6">
-                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
-                    Grid
-                  </h2>
-                  <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-black">
-                    <input
-                      type="checkbox"
-                      checked={results.gridVisible}
-                      aria-label="Show grid"
-                      onChange={(e) => {
-                        pushHistory();
-                        updateResultsSettings({ gridVisible: e.target.checked });
-                      }}
-                      className="h-4 w-4 cursor-pointer"
-                    />
-                    Show grid
-                  </label>
-
-                  <label className="mt-4 block text-sm text-black">
-                    <span className="text-black/70">Horizontal ticks</span>
-                    <input
-                      type="number"
-                      min={RESULTS_GRID_TICKS_MIN}
-                      max={RESULTS_GRID_TICKS_MAX}
-                      step={1}
-                      value={results.horizontalTicks}
-                      aria-label="Horizontal grid ticks"
-                      onFocus={() => pushHistory()}
-                      onChange={(e) => {
-                        const next =
-                          e.target.value === ""
-                            ? RESULTS_GRID_TICKS_MIN
-                            : Number(e.target.value);
-                        updateResultsSettings({
-                          horizontalTicks: Number.isFinite(next)
-                            ? next
-                            : results.horizontalTicks,
-                        });
-                      }}
-                      onBlur={() =>
-                        updateResultsSettings({
-                          horizontalTicks: normalizeGridTicks(results.horizontalTicks),
-                        })
-                      }
-                      className="mt-1.5 w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
-                    />
-                  </label>
-
-                  <label className="mt-4 block text-sm text-black">
-                    <span className="text-black/70">Vertical ticks</span>
-                    <input
-                      type="number"
-                      min={RESULTS_GRID_TICKS_MIN}
-                      max={RESULTS_GRID_TICKS_MAX}
-                      step={1}
-                      value={results.verticalTicks}
-                      aria-label="Vertical grid ticks"
-                      onFocus={() => pushHistory()}
-                      onChange={(e) => {
-                        const next =
-                          e.target.value === ""
-                            ? RESULTS_GRID_TICKS_MIN
-                            : Number(e.target.value);
-                        updateResultsSettings({
-                          verticalTicks: Number.isFinite(next)
-                            ? next
-                            : results.verticalTicks,
-                        });
-                      }}
-                      onBlur={() =>
-                        updateResultsSettings({
-                          verticalTicks: normalizeGridTicks(results.verticalTicks),
-                        })
-                      }
-                      className="mt-1.5 w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none focus:border-[#2f5d76]"
-                    />
-                  </label>
-                  <p className="mt-2 text-xs text-black/50">
-                    1–{RESULTS_GRID_TICKS_MAX} ticks. Hold Ctrl while dragging or
-                    resizing to snap.
-                  </p>
-                </section>
-
-                <section className="mt-8">
-                  <button
-                    type="button"
-                    onClick={enterResultsPreview}
-                    className="w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-[#2f5d76] px-3 py-2 text-sm font-medium text-white hover:bg-[#244a5e]"
-                  >
-                    Show Preview
-                  </button>
-                </section>
-              </>
+              <LayoutPageSettings
+                backgroundColor={results.backgroundColor}
+                gridVisible={results.gridVisible}
+                horizontalTicks={results.horizontalTicks}
+                verticalTicks={results.verticalTicks}
+                onCheckpoint={pushHistory}
+                onPatch={updateResultsSettings}
+                onShowPreview={enterResultsPreview}
+              />
+            ) : showQuizUiSettings ? (
+              <LayoutPageSettings
+                backgroundColor={quizUiPage.backgroundColor}
+                gridVisible={quizUiPage.gridVisible}
+                horizontalTicks={quizUiPage.horizontalTicks}
+                verticalTicks={quizUiPage.verticalTicks}
+                onCheckpoint={pushHistory}
+                onPatch={updateQuizUiSettings}
+                onShowPreview={enterQuizUiPreview}
+              />
             ) : (
               <>
                 <section className="mt-6">
@@ -10271,6 +13456,21 @@ export function CreateQuizEditor({
 
                 <section className="mt-8">
                   <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                    Local Default Question Color
+                  </h2>
+                  <ResultsColorPicker
+                    label="Question box color"
+                    value={resolvedDefaultQuestionColor(
+                      localDefaultQuestionColor,
+                      defaultQuestionColor,
+                    )}
+                    onCheckpoint={pushHistory}
+                    onChange={setLocalDefaultQuestionColor}
+                  />
+                </section>
+
+                <section className="mt-8">
+                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
                     Local Default Question Answers
                   </h2>
                   <AnswersEditor
@@ -10348,37 +13548,85 @@ export function CreateQuizEditor({
       )}
 
       {quizScreen?.kind === "question" && quizQuestionBox && (
-        <div className="absolute inset-0 z-[60] flex flex-col overflow-y-auto bg-[#f3f3f3]">
-          <div className="mx-auto flex min-h-full w-full max-w-xl flex-col items-center justify-center px-4 py-20">
-            <div className="w-full rounded-2xl bg-[#e6e6e6] px-8 py-10 text-center text-xl leading-relaxed font-medium text-[#333333] shadow-sm">
+        <div
+          className="absolute inset-0 z-[60] overflow-x-clip overflow-y-auto overscroll-x-none"
+          style={{ backgroundColor: quizUiPage.backgroundColor }}
+        >
+          <div
+            className="relative overflow-x-clip overflow-y-clip"
+            style={{
+              minHeight: "100%",
+              height: quizPlayPageHeight * quizPlayFit.scale,
+            }}
+          >
+            <div
+              className="absolute top-0 left-0 origin-top-left"
+              style={{
+                width: resultsBaseWidth,
+                height: quizPlayPageHeight,
+                transform: layoutPaintTransform(
+                  quizPlayFit.scale,
+                  quizPlayFit.offsetX,
+                ),
+              }}
+            >
+            <div
+              className="absolute flex items-center justify-center overflow-hidden rounded-2xl px-8 py-10 text-center leading-relaxed font-medium shadow-sm"
+              style={{
+                left: quizUiPage.question.x,
+                top: quizUiPage.question.y,
+                width: quizUiPage.question.width,
+                height: quizUiPage.question.height,
+                ...questionBoxPaint(quizQuestionBox.color),
+                fontSize: quizUiChromeFontSize(
+                  quizUiPage.question,
+                  "question",
+                ),
+              }}
+            >
               {quizQuestionBox.question?.trim() || "\u00a0"}
             </div>
 
-            <div className="mt-6 flex w-full flex-col gap-3">
-              {quizAnswers.map((answer) => {
-                const selected = quizSelectedAnswerId === answer.id;
-                return (
-                  <button
-                    key={answer.id}
-                    type="button"
-                    onClick={() => setQuizSelectedAnswerId(answer.id)}
-                    className={`w-full cursor-pointer rounded-xl px-4 py-3 text-center text-base font-medium text-white shadow-sm transition ${
-                      selected
-                        ? "bg-[#6f6f6f] ring-2 ring-[#2f5d76] ring-offset-2 ring-offset-[#f3f3f3]"
-                        : "bg-[#9a9a9a] hover:bg-[#8a8a8a]"
-                    }`}
-                  >
-                    {answer.name.trim() || "Answer"}
-                  </button>
-                );
-              })}
-            </div>
+            {quizUiAnswerRects(quizUiPage, quizAnswers.length).map((rect, index) => {
+              const answer = quizAnswers[index];
+              if (!answer) return null;
+              const selected = quizSelectedAnswerId === answer.id;
+              return (
+                <button
+                  key={answer.id}
+                  type="button"
+                  onClick={() => setQuizSelectedAnswerId(answer.id)}
+                  className={`absolute cursor-pointer overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm transition ${
+                    selected
+                      ? "ring-2 ring-[#2f5d76] ring-offset-2 brightness-[0.85]"
+                      : "hover:brightness-90"
+                  }`}
+                  style={{
+                    left: rect.x,
+                    top: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                    ...answerBoxPaint(answer.color, answer.textColor),
+                    fontSize: quizUiChromeFontSize(rect, "answer"),
+                  }}
+                >
+                  {answer.name.trim() || "Answer"}
+                </button>
+              );
+            })}
 
             {quizCanGoNext && (
               <button
                 type="button"
                 onClick={quizGoNext}
-                className="mt-6 w-full cursor-pointer rounded-xl bg-[#2f5d76] px-4 py-3 text-base font-medium text-white shadow-sm hover:bg-[#244a5e]"
+                className="absolute cursor-pointer overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm hover:brightness-90"
+                style={{
+                  left: quizUiPage.nextButton.x,
+                  top: quizUiPage.nextButton.y,
+                  width: quizUiPage.nextButton.width,
+                  height: quizUiPage.nextButton.height,
+                  ...quizUiButtonPaint(quizUiPage.nextButton, "next"),
+                }}
               >
                 Next
               </button>
@@ -10388,10 +13636,96 @@ export function CreateQuizEditor({
               type="button"
               onClick={quizGoBack}
               disabled={!quizCanGoBack}
-              className="mt-4 w-full rounded-xl border border-black/15 bg-[#ececec] px-4 py-3 text-base font-medium text-[#555555] shadow-sm hover:bg-[#e3e3e3] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[#ececec]"
+              className="absolute overflow-hidden rounded-xl border border-black/15 px-4 py-3 text-center font-medium shadow-sm hover:brightness-90 disabled:cursor-not-allowed disabled:opacity-40"
+              style={{
+                left: quizUiPage.backButton.x,
+                top: quizUiPage.backButton.y,
+                width: quizUiPage.backButton.width,
+                height: quizUiPage.backButton.height,
+                ...quizUiButtonPaint(quizUiPage.backButton, "back"),
+              }}
             >
               Back
             </button>
+
+            {(quizUiPage.textBoxes ?? []).map((box) => (
+              <div
+                key={box.id}
+                className="pointer-events-none absolute flex flex-col overflow-visible rounded-lg border-0 bg-transparent p-2"
+                style={{
+                  left: box.x,
+                  top: box.y,
+                  width: box.width,
+                  height: box.height,
+                }}
+              >
+                {box.showImage && (
+                  <div
+                    className="absolute"
+                    style={{
+                      left: box.imageOffsetX,
+                      width: box.imageWidth,
+                      height: box.imageHeight,
+                      ...(box.imageAbove
+                        ? {
+                            bottom: "100%",
+                            marginBottom: RESULTS_TEXT_IMAGE_GAP,
+                          }
+                        : {
+                            top: "100%",
+                            marginTop: RESULTS_TEXT_IMAGE_GAP,
+                          }),
+                    }}
+                  >
+                    <ResultsCanvasImage
+                      src={box.image}
+                      preview
+                      selected={false}
+                    />
+                  </div>
+                )}
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <ResultsRichTextEditor
+                    segments={box.segments}
+                    variables={allVariables}
+                    compact
+                    align={box.textAlign}
+                    preview
+                    fontSize={box.fontSize}
+                    color={box.textColor}
+                    onCheckpoint={() => {}}
+                    onChange={() => {}}
+                  />
+                </div>
+              </div>
+            ))}
+            {(quizUiPage.images ?? []).map((image) => {
+              const src = resolveResultsImageSrc(
+                image,
+                quizScreen?.kind === "question"
+                  ? quizScreen.projectVariables
+                  : variables,
+                quizScreen?.kind === "question"
+                  ? quizScreen.localVariables
+                  : localVariables,
+              );
+              if (!src) return null;
+              return (
+                <div
+                  key={image.id}
+                  className="pointer-events-none absolute"
+                  style={{
+                    left: image.x,
+                    top: image.y,
+                    width: image.width,
+                    height: image.height,
+                  }}
+                >
+                  <ResultsCanvasImage src={src} preview selected={false} />
+                </div>
+              );
+            })}
+            </div>
           </div>
         </div>
       )}

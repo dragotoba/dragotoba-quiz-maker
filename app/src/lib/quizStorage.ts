@@ -51,11 +51,16 @@ export type StoredQuizDocument = {
   updatedAt: number;
   variables: unknown;
   defaultAnswers: unknown;
+  defaultQuestionColor?: unknown;
+  defaultAnswerColor?: unknown;
+  defaultAnswerTextColor?: unknown;
   sections: unknown;
   activeSectionId: string;
   listing?: QuizListing;
   /** Results page (scroll document); optional for older saves. */
   results?: unknown;
+  /** Question-screen layout; optional for older saves. */
+  quizUi?: unknown;
   /** @deprecated migrated into sections */
   boxes?: unknown;
   transitions?: unknown;
@@ -83,6 +88,7 @@ function emptySection(existingNames: string[] = []) {
     name: nextSectionName(existingNames),
     localVariables: [],
     localDefaultAnswers: [],
+    localDefaultQuestionColor: null,
     boxes: [
       {
         id: crypto.randomUUID(),
@@ -110,12 +116,18 @@ function emptyDocument(id: string = crypto.randomUUID()): StoredQuizDocument {
         id: crypto.randomUUID(),
         name: "Ans1",
         effects: [],
+        color: "#9a9a9a",
+        textColor: "#ffffff",
       },
     ],
+    defaultQuestionColor: "#e6e6e6",
+    defaultAnswerColor: "#9a9a9a",
+    defaultAnswerTextColor: "#ffffff",
     sections: [section],
     activeSectionId: section.id,
     results: { textBoxes: [] },
     listing: emptyListing(),
+    quizUi: undefined,
   };
 }
 
@@ -134,6 +146,7 @@ function migrateFlatToSections(data: Record<string, unknown>) {
     name,
     localVariables: data.localVariables ?? [],
     localDefaultAnswers: data.localDefaultAnswers ?? [],
+    localDefaultQuestionColor: data.localDefaultQuestionColor ?? null,
     boxes: data.boxes ?? [],
     transitions: data.transitions ?? [],
     camera: data.camera ?? { x: 0, y: 0, scale: 1 },
@@ -182,10 +195,14 @@ function asDocument(raw: unknown): StoredQuizDocument | null {
     updatedAt,
     variables: data.variables ?? [],
     defaultAnswers: data.defaultAnswers ?? emptyDocument(id).defaultAnswers,
+    defaultQuestionColor: data.defaultQuestionColor,
+    defaultAnswerColor: data.defaultAnswerColor,
+    defaultAnswerTextColor: data.defaultAnswerTextColor,
     sections,
     activeSectionId,
     results: data.results ?? { textBoxes: [] },
     listing: normalizeListing(data.listing),
+    quizUi: data.quizUi,
   };
 }
 
