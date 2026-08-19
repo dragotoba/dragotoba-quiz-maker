@@ -64,6 +64,7 @@ function asDocument(raw) {
   }
 
   return {
+    ...data,
     version: 1,
     id,
     projectName,
@@ -84,6 +85,10 @@ function asDocument(raw) {
           }
         : { description: "", coverImage: "", unlisted: false },
   };
+}
+
+function noStore(res) {
+  res.set("Cache-Control", "no-store");
 }
 
 function parseDocument(raw) {
@@ -310,7 +315,9 @@ export function registerQuizRoutes(app, pool, requireUser) {
         res.status(404).json({ error: "Quiz not found." });
         return;
       }
-      const parsed = parseDocument(row.document);
+      const parsed = req.body?.quiz
+        ? parseDocument({ ...req.body.quiz, id: req.params.id })
+        : parseDocument(row.document);
       if (!parsed.ok) {
         res.status(400).json({ error: parsed.error });
         return;
@@ -379,6 +386,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
          LIMIT 100`,
         [userId],
       );
+      noStore(res);
       res.json({ quizzes: result.rows.map(rowToCommunity) });
     } catch (error) {
       console.error("List community quizzes failed:", error);
@@ -401,6 +409,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
         res.status(404).json({ error: "Quiz not found." });
         return;
       }
+      noStore(res);
       res.json({ quiz: row.document });
     } catch (error) {
       console.error("Load community quiz failed:", error);
@@ -432,6 +441,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
         res.status(404).json({ error: "Quiz not found." });
         return;
       }
+      noStore(res);
       res.json({ quiz: rowToCommunity(row) });
     } catch (error) {
       console.error("Load community listing failed:", error);

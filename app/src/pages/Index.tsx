@@ -71,6 +71,9 @@ export default function Index() {
           </div>
 
           <div className="flex flex-1 flex-col items-center justify-center gap-9 py-6">
+            <h1 className="text-center font-[Poppins,sans-serif] text-4xl font-bold tracking-[0.01em] text-[#2f5d76]">
+              Dragotoba Quiz Maker
+            </h1>
             <div className="qh-orbit relative h-[420px] w-[420px]">
               <div className="qh-spin absolute inset-0">
                 {sets.circleSet.map((sym, i) => {

@@ -10276,7 +10276,7 @@ export function CreateQuizEditor({
     setPublishError("");
     try {
       await persistQuiz(quiz);
-      await publishStoredQuiz(quiz.id);
+      await publishStoredQuiz(quiz.id, quiz);
       setPublished(true);
       setListingSaved(true);
     } catch (error) {
@@ -13174,11 +13174,12 @@ export function CreateQuizEditor({
         <div className="qh-page absolute inset-0 z-[80] overflow-y-auto bg-[#f4f1ea] px-6 py-16 font-[Poppins,sans-serif]">
           <div className="mx-auto w-full max-w-lg rounded-2xl border border-[#1c2a33]/10 bg-white/90 p-8 shadow-[0_8px_32px_rgba(0,0,0,0.08)]">
             <h1 className="text-2xl font-bold tracking-[-0.02em] text-[#1c2a33]">
-              Publish quiz
+              {published ? "Update quiz" : "Publish quiz"}
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-[#4a5560]">
-              Confirm how this quiz should appear. Publishing copies the current quiz;
-              later edits stay private until you publish again.
+              {published
+                ? "Confirm how this quiz should appear. Updating replaces the live version with the current quiz."
+                : "Confirm how this quiz should appear. Publishing copies the current quiz; later edits stay private until you update it."}
             </p>
 
             <label className="mt-6 block text-sm text-[#1c2a33]">
@@ -13261,9 +13262,11 @@ export function CreateQuizEditor({
                 className="w-full cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {publishBusy
-                  ? "Publishing…"
+                  ? published
+                    ? "Updating…"
+                    : "Publishing…"
                   : published
-                    ? "Publish again"
+                    ? "Update Quiz"
                     : "Publish"}
               </button>
               {published && !publishBusy ? (
@@ -13566,7 +13569,7 @@ export function CreateQuizEditor({
                     }}
                     className="mt-3 w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-white px-3 py-2 text-sm font-medium text-[#2f5d76] hover:bg-[#2f5d76]/5"
                   >
-                    Publish
+                    {published ? "Update Quiz" : "Publish"}
                   </button>
                 </section>
               </>

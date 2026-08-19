@@ -71,32 +71,30 @@ export default function Community() {
       setSelectedError("");
       return;
     }
-    const fromList = quizzes.find((quiz) => quiz.id === quizId);
-    if (fromList) {
-      setSelected(fromList);
-      setSelectedError("");
-      return;
-    }
-    if (loading) return;
+    setSelectedError("");
+    setSelected((prev) => {
+      if (prev?.id === quizId) return prev;
+      return quizzes.find((quiz) => quiz.id === quizId) ?? null;
+    });
     let cancelled = false;
     void (async () => {
       try {
         const listing = await getCommunityQuiz(quizId);
-        if (!cancelled) {
-          setSelected(listing);
-          setSelectedError("");
-        }
+        if (cancelled) return;
+        setSelected(listing);
+        setQuizzes((prev) =>
+          prev.map((quiz) => (quiz.id === listing.id ? { ...quiz, ...listing } : quiz)),
+        );
       } catch (err) {
-        if (!cancelled) {
-          setSelected(null);
-          setSelectedError(err instanceof Error ? err.message : "Quiz not found.");
-        }
+        if (cancelled) return;
+        setSelected((prev) => (prev?.id === quizId ? prev : null));
+        setSelectedError(err instanceof Error ? err.message : "Quiz not found.");
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [quizId, quizzes, loading]);
+  }, [quizId]);
 
   useEffect(() => {
     setCopied(false);
@@ -170,7 +168,7 @@ export default function Community() {
   if (playQuiz) {
     return (
       <CreateQuizEditor
-        key={playQuiz.id}
+        key={`${playQuiz.id}-${playQuiz.updatedAt}`}
         initialQuiz={playQuiz}
         playOnly
         onExitPlay={() => setPlayQuiz(null)}

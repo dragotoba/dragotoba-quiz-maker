@@ -357,7 +357,7 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     Object.assign(headers, extra);
   }
 
-  const res = await fetch(`/api${path}`, { ...init, headers });
+  const res = await fetch(`/api${path}`, { cache: "no-store", ...init, headers });
   if (res.status === 204) return undefined as T;
 
   const raw = await res.text();
@@ -476,13 +476,14 @@ export async function loadStoredQuiz(
   }
 }
 
-export async function publishStoredQuiz(id: string) {
+export async function publishStoredQuiz(id: string, quiz?: StoredQuizDocument) {
   if (!usesRemoteStorage()) {
     throw new Error("Sign in to publish a quiz.");
   }
   await migrateLocalQuizzesIfNeeded();
   await apiJson<{ published: boolean }>(`/quizzes/${encodeURIComponent(id)}/publish`, {
     method: "POST",
+    body: JSON.stringify(quiz ? { quiz } : {}),
   });
 }
 
