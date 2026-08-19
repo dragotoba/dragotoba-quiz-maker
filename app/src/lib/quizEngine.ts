@@ -25,6 +25,8 @@ export type AnswerOption = {
   id: string;
   name: string;
   effects: AnswerEffect[];
+  color?: string;
+  textColor?: string;
 };
 
 export type TransitionCondition = {
@@ -52,6 +54,7 @@ export type EngineBox = {
   answers?: AnswerOption[];
   effects?: AnswerEffect[];
   targetSection?: string;
+  color?: string;
 };
 
 export type EngineSection = {
