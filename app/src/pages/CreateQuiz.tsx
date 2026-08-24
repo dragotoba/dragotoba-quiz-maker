@@ -1441,11 +1441,14 @@ function createDefaultAnswer(): AnswerOption {
   };
 }
 
-function createDefaultEffect(variableId = ""): AnswerEffect {
+function createDefaultEffect(
+  variableId = "",
+  variableType?: VariableType,
+): AnswerEffect {
   return {
     id: crypto.randomUUID(),
     variableId,
-    operation: "set",
+    operation: isSetOnlyVariableType(variableType) ? "set" : "add",
     value: 0,
   };
 }
@@ -1462,11 +1465,11 @@ function cloneAnswersWithNewIds(answers: AnswerOption[]): AnswerOption[] {
 }
 
 const EFFECT_OPERATIONS: { value: EffectOperation; label: string }[] = [
-  { value: "set", label: "set" },
   { value: "add", label: "add" },
   { value: "subtract", label: "subtract" },
   { value: "multiply", label: "multiply" },
   { value: "divide", label: "divide" },
+  { value: "set", label: "set" },
 ];
 
 const CONDITION_OPERATORS: { value: ConditionOperator; label: string }[] = [
@@ -5849,6 +5852,7 @@ export function CreateQuizEditor({
   const [quizSelectedAnswerId, setQuizSelectedAnswerId] = useState<string | null>(
     null,
   );
+  const [quizAutoAdvance, setQuizAutoAdvance] = useState(false);
   const [axisLabelHeights, setAxisLabelHeights] = useState<Record<string, number>>(
     {},
   );
@@ -6581,21 +6585,21 @@ export function CreateQuizEditor({
     });
   }
 
-  function quizGoNext() {
+  function quizGoNext(selectedAnswerId = quizSelectedAnswerId) {
     const screen = quizScreenRef.current;
     if (!screen || screen.kind !== "question" || !quizGraph) return;
     const question = findQuestionBox(quizGraph, screen);
     const answers = question?.answers ?? [];
-    if (answers.length > 0 && !quizSelectedAnswerId) return;
+    if (answers.length > 0 && !selectedAnswerId) return;
 
     const snapshot = {
       ...screen,
-      selectedAnswerId: quizSelectedAnswerId,
+      selectedAnswerId,
     };
     const next = submitAnswer(
       quizGraph,
       screen,
-      quizSelectedAnswerId,
+      selectedAnswerId,
       quizTieBreaksRef.current,
     );
     quizTieBreaksRef.current = next.tieBreaks;
@@ -9725,8 +9729,8 @@ export function CreateQuizEditor({
   function addEffect(answerId: string) {
     if (!selectedId) return;
     pushHistory();
-    const defaultVarId =
-      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
+    const defaultVar =
+      variablesRef.current[0] ?? localVariablesRef.current[0] ?? null;
     setBoxes((prev) =>
       prev.map((box) => {
         if (box.id !== selectedId || box.kind !== "question") return box;
@@ -9736,7 +9740,10 @@ export function CreateQuizEditor({
             answer.id === answerId
               ? {
                   ...answer,
-                  effects: [...answer.effects, createDefaultEffect(defaultVarId)],
+                  effects: [
+                    ...answer.effects,
+                    createDefaultEffect(defaultVar?.id ?? "", defaultVar?.type),
+                  ],
                 }
               : answer,
           ),
@@ -9794,14 +9801,17 @@ export function CreateQuizEditor({
   function addBlockEffect() {
     if (!selectedId) return;
     pushHistory();
-    const defaultVarId =
-      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
+    const defaultVar =
+      variablesRef.current[0] ?? localVariablesRef.current[0] ?? null;
     setBoxes((prev) =>
       prev.map((box) =>
         box.id === selectedId && isEffectBlock(box)
           ? {
               ...box,
-              effects: [...box.effects, createDefaultEffect(defaultVarId)],
+              effects: [
+                ...box.effects,
+                createDefaultEffect(defaultVar?.id ?? "", defaultVar?.type),
+              ],
             }
           : box,
       ),
@@ -10016,14 +10026,17 @@ export function CreateQuizEditor({
 
   function addDefaultEffect(answerId: string) {
     pushHistory();
-    const defaultVarId =
-      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
+    const defaultVar =
+      variablesRef.current[0] ?? localVariablesRef.current[0] ?? null;
     setDefaultAnswers((prev) =>
       prev.map((answer) =>
         answer.id === answerId
           ? {
               ...answer,
-              effects: [...answer.effects, createDefaultEffect(defaultVarId)],
+              effects: [
+                ...answer.effects,
+                createDefaultEffect(defaultVar?.id ?? "", defaultVar?.type),
+              ],
             }
           : answer,
       ),
@@ -10091,14 +10104,17 @@ export function CreateQuizEditor({
 
   function addLocalDefaultEffect(answerId: string) {
     pushHistory();
-    const defaultVarId =
-      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
+    const defaultVar =
+      variablesRef.current[0] ?? localVariablesRef.current[0] ?? null;
     setLocalDefaultAnswers((prev) =>
       prev.map((answer) =>
         answer.id === answerId
           ? {
               ...answer,
-              effects: [...answer.effects, createDefaultEffect(defaultVarId)],
+              effects: [
+                ...answer.effects,
+                createDefaultEffect(defaultVar?.id ?? "", defaultVar?.type),
+              ],
             }
           : answer,
       ),
@@ -11251,6 +11267,7 @@ export function CreateQuizEditor({
                   Placeholder Answer
                 </QuizUiEditorItem>
               ))}
+              {!(quizAutoAdvance && quizUiPreview) && (
               <QuizUiEditorItem
                 rect={quizUiPage.nextButton}
                 selected={isQuizUiSelected(quizUiPage.nextButton.id)}
@@ -11273,6 +11290,7 @@ export function CreateQuizEditor({
               >
                 Next
               </QuizUiEditorItem>
+              )}
               <QuizUiEditorItem
                 rect={quizUiPage.backButton}
                 selected={isQuizUiSelected(quizUiPage.backButton.id)}
@@ -13149,25 +13167,39 @@ export function CreateQuizEditor({
       )}
 
       {(resultsPreview || quizUiPreview || quizScreen || publishOpen) && (
-        <button
-          type="button"
-          aria-label={
-            quizScreen
-              ? "Exit quiz"
-              : publishOpen
-                ? "Back to editor"
-                : "Exit preview"
-          }
-          onClick={() => {
-            if (quizScreen) exitQuizPlay();
-            else if (publishOpen) setPublishOpen(false);
-            else if (quizUiPreview) exitQuizUiPreview();
-            else exitResultsPreview();
-          }}
-          className="absolute top-4 right-4 z-[90] cursor-pointer rounded-md border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black shadow-sm hover:bg-[#f5f5f5]"
-        >
-          {quizScreen ? "Exit" : publishOpen ? "Back" : "Exit Preview"}
-        </button>
+        <div className="absolute top-4 right-4 z-[90] flex items-center gap-2">
+          {(quizScreen?.kind === "question" || quizUiPreview) && (
+            <label className="flex cursor-pointer items-center gap-2 rounded-md border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black shadow-sm hover:bg-[#f5f5f5]">
+              <input
+                type="checkbox"
+                checked={quizAutoAdvance}
+                aria-label="Auto advance"
+                onChange={(e) => setQuizAutoAdvance(e.target.checked)}
+                className="h-4 w-4 cursor-pointer"
+              />
+              Auto advance
+            </label>
+          )}
+          <button
+            type="button"
+            aria-label={
+              quizScreen
+                ? "Exit quiz"
+                : publishOpen
+                  ? "Back to editor"
+                  : "Exit preview"
+            }
+            onClick={() => {
+              if (quizScreen) exitQuizPlay();
+              else if (publishOpen) setPublishOpen(false);
+              else if (quizUiPreview) exitQuizUiPreview();
+              else exitResultsPreview();
+            }}
+            className="cursor-pointer rounded-md border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black shadow-sm hover:bg-[#f5f5f5]"
+          >
+            {quizScreen ? "Exit" : publishOpen ? "Back" : "Exit Preview"}
+          </button>
+        </div>
       )}
 
       {publishOpen && (
@@ -13887,7 +13919,13 @@ export function CreateQuizEditor({
                 <button
                   key={answer.id}
                   type="button"
-                  onClick={() => setQuizSelectedAnswerId(answer.id)}
+                  onClick={() => {
+                    if (quizAutoAdvance) {
+                      quizGoNext(answer.id);
+                      return;
+                    }
+                    setQuizSelectedAnswerId(answer.id);
+                  }}
                   className={`absolute cursor-pointer overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm transition ${
                     selected
                       ? "ring-2 ring-[#2f5d76] ring-offset-2 brightness-[0.85]"
@@ -13907,10 +13945,10 @@ export function CreateQuizEditor({
               );
             })}
 
-            {quizCanGoNext && (
+            {quizCanGoNext && (!quizAutoAdvance || quizAnswers.length === 0) && (
               <button
                 type="button"
-                onClick={quizGoNext}
+                onClick={() => quizGoNext()}
                 className="absolute cursor-pointer overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm hover:brightness-90"
                 style={{
                   left: quizPlayLayout.nextButton.x,
