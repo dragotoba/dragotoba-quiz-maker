@@ -16,6 +16,7 @@ import {
   loadStoredQuiz,
   nextSectionName,
   normalizeListing,
+  duplicateStoredQuiz,
   publishStoredQuiz,
   saveStoredQuiz,
   type QuizListing,
@@ -5663,26 +5664,27 @@ export function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
   };
 }
 
+function toStoredQuiz(quiz: PersistedQuiz): StoredQuizDocument {
+  return {
+    version: 1,
+    id: quiz.id,
+    projectName: quiz.projectName,
+    updatedAt: quiz.updatedAt,
+    variables: quiz.variables,
+    defaultAnswers: quiz.defaultAnswers,
+    defaultQuestionColor: quiz.defaultQuestionColor,
+    defaultAnswerColor: quiz.defaultAnswerColor,
+    defaultAnswerTextColor: quiz.defaultAnswerTextColor,
+    sections: quiz.sections,
+    activeSectionId: quiz.activeSectionId,
+    results: quiz.results,
+    quizUi: quiz.quizUi,
+    listing: quiz.listing,
+  };
+}
+
 function persistQuiz(quiz: PersistedQuiz, options?: { keepalive?: boolean }) {
-  return saveStoredQuiz(
-    {
-      version: 1,
-      id: quiz.id,
-      projectName: quiz.projectName,
-      updatedAt: quiz.updatedAt,
-      variables: quiz.variables,
-      defaultAnswers: quiz.defaultAnswers,
-      defaultQuestionColor: quiz.defaultQuestionColor,
-      defaultAnswerColor: quiz.defaultAnswerColor,
-      defaultAnswerTextColor: quiz.defaultAnswerTextColor,
-      sections: quiz.sections,
-      activeSectionId: quiz.activeSectionId,
-      results: quiz.results,
-      quizUi: quiz.quizUi,
-      listing: quiz.listing,
-    },
-    options,
-  );
+  return saveStoredQuiz(toStoredQuiz(quiz), options);
 }
 
 function cloneSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
@@ -5842,6 +5844,8 @@ export function CreateQuizEditor({
   const [published, setPublished] = useState(initiallyPublished);
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishError, setPublishError] = useState("");
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copyError, setCopyError] = useState("");
   const [quizScreen, setQuizScreen] = useState<QuizPlayScreen | null>(playBoot);
   const [quizGraph, setQuizGraph] = useState<QuizSection[] | null>(
     playOnly ? initialQuiz.sections : null,
@@ -10302,6 +10306,21 @@ export function CreateQuizEditor({
     }
   }
 
+  async function handleCopyQuiz() {
+    if (copyBusy) return;
+    setCopyBusy(true);
+    setCopyError("");
+    try {
+      const source = getPersistedQuiz();
+      await persistQuiz(source);
+      const copy = await duplicateStoredQuiz(toStoredQuiz(source));
+      navigate(`/quiz/${encodeURIComponent(copy.id)}`);
+    } catch (error) {
+      setCopyError(error instanceof Error ? error.message : "Could not copy quiz.");
+      setCopyBusy(false);
+    }
+  }
+
   return (
     <div className="relative h-screen w-full overflow-hidden bg-white">
       <div
@@ -13603,6 +13622,17 @@ export function CreateQuizEditor({
                   >
                     {published ? "Update Quiz" : "Publish"}
                   </button>
+                  <button
+                    type="button"
+                    disabled={copyBusy}
+                    onClick={() => void handleCopyQuiz()}
+                    className="mt-3 w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-white px-3 py-2 text-sm font-medium text-[#2f5d76] hover:bg-[#2f5d76]/5 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {copyBusy ? "Copying…" : "Make a copy"}
+                  </button>
+                  {copyError ? (
+                    <p className="mt-2 text-xs text-[#c0392b]">{copyError}</p>
+                  ) : null}
                 </section>
               </>
             ) : showResultsSettings ? (
