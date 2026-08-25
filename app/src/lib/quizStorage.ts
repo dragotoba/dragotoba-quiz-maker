@@ -553,6 +553,20 @@ export async function createStoredQuiz(): Promise<StoredQuizDocument> {
   return doc;
 }
 
+export async function duplicateStoredQuiz(
+  source: StoredQuizDocument,
+): Promise<StoredQuizDocument> {
+  const originalName = source.projectName.trim() || DEFAULT_PROJECT_NAME;
+  const doc: StoredQuizDocument = {
+    ...structuredClone(source),
+    id: crypto.randomUUID(),
+    projectName: `Copy of ${originalName}`,
+    updatedAt: Date.now(),
+  };
+  await saveStoredQuiz(doc);
+  return doc;
+}
+
 export async function deleteStoredQuiz(id: string) {
   if (!usesRemoteStorage()) {
     deleteLocalQuiz(id);
