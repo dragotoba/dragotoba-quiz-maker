@@ -1,4 +1,5 @@
 import { authHeaders, getToken } from "./auth";
+import type { ProjectVariable } from "./quizEngine";
 
 export const DEFAULT_PROJECT_NAME = "Untitled Quiz";
 export const LIBRARY_KEY = "dragotoba-quiz-maker:library";
@@ -580,3 +581,88 @@ export async function deleteStoredQuiz(id: string) {
 }
 
 export { nextSectionName, emptySection, localQuizCount };
+
+const COMMUNITY_RESULTS_KEY = "dragotoba-quiz-maker:community-results";
+
+export type SavedCommunityResult = {
+  quizId: string;
+  savedAt: number;
+  projectVariables: ProjectVariable[];
+  localVariables: ProjectVariable[];
+};
+
+function asSavedVariable(raw: unknown): ProjectVariable | null {
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  if (typeof data.id !== "string" || typeof data.name !== "string") return null;
+  const type =
+    data.type === "bool" || data.type === "string" || data.type === "number"
+      ? data.type
+      : "number";
+  let value: ProjectVariable["value"] = 0;
+  if (type === "string") {
+    value = typeof data.value === "string" ? data.value : "";
+  } else if (typeof data.value === "number" && Number.isFinite(data.value)) {
+    value = data.value;
+  } else if (typeof data.value === "string") {
+    const n = Number(data.value);
+    value = Number.isFinite(n) ? n : 0;
+  }
+  return { id: data.id, name: data.name, type, value };
+}
+
+function readCommunityResults(): Record<string, SavedCommunityResult> {
+  try {
+    const raw = localStorage.getItem(COMMUNITY_RESULTS_KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw) as unknown;
+    if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+    const next: Record<string, SavedCommunityResult> = {};
+    for (const [id, value] of Object.entries(data as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const row = value as Record<string, unknown>;
+      const projectVariables = Array.isArray(row.projectVariables)
+        ? row.projectVariables
+            .map(asSavedVariable)
+            .filter((item): item is ProjectVariable => item !== null)
+        : [];
+      const localVariables = Array.isArray(row.localVariables)
+        ? row.localVariables
+            .map(asSavedVariable)
+            .filter((item): item is ProjectVariable => item !== null)
+        : [];
+      next[id] = {
+        quizId: id,
+        savedAt: typeof row.savedAt === "number" ? row.savedAt : Date.now(),
+        projectVariables,
+        localVariables,
+      };
+    }
+    return next;
+  } catch {
+    return {};
+  }
+}
+
+export function getCommunityQuizResult(quizId: string): SavedCommunityResult | null {
+  return readCommunityResults()[quizId] ?? null;
+}
+
+export function saveCommunityQuizResult(
+  quizId: string,
+  projectVariables: ProjectVariable[],
+  localVariables: ProjectVariable[],
+) {
+  try {
+    const all = readCommunityResults();
+    all[quizId] = {
+      quizId,
+      savedAt: Date.now(),
+      projectVariables,
+      localVariables,
+    };
+    localStorage.setItem(COMMUNITY_RESULTS_KEY, JSON.stringify(all));
+  } catch {
+    // Ignore quota / private-mode failures.
+  }
+}

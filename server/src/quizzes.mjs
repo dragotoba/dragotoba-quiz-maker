@@ -128,6 +128,23 @@ function requestUserId(req) {
 
 const COMMUNITY_SORTS = new Set(["trending", "liked", "recent"]);
 
+function communityFromSql(sort) {
+  const base = `FROM published_quizzes p
+         JOIN users u ON u.id = p.user_id`;
+  if (sort !== "trending") return base;
+  return `${base}
+         LEFT JOIN LATERAL (
+           SELECT
+             COUNT(*) FILTER (WHERE l.created_at >= NOW() - INTERVAL '24 hours') AS likes_24h,
+             COUNT(*) FILTER (WHERE l.created_at >= NOW() - INTERVAL '48 hours') AS likes_48h,
+             COUNT(*) FILTER (WHERE l.created_at >= NOW() - INTERVAL '168 hours') AS likes_168h,
+             COUNT(*) FILTER (WHERE l.created_at >= NOW() - INTERVAL '336 hours') AS likes_336h
+           FROM published_quiz_likes l
+           WHERE l.quiz_id = p.id
+             AND l.created_at >= NOW() - INTERVAL '336 hours'
+         ) ls ON TRUE`;
+}
+
 function communityOrderBy(sort) {
   if (sort === "liked") {
     return "p.like_count DESC, p.published_at DESC";
@@ -135,7 +152,18 @@ function communityOrderBy(sort) {
   if (sort === "recent") {
     return "p.published_at DESC";
   }
-  return "(p.like_count::bigint * 86400) + EXTRACT(EPOCH FROM p.published_at)::bigint DESC";
+  return `(
+           (
+             COALESCE(ls.likes_24h, 0)::float
+               / LEAST(24.0, GREATEST(EXTRACT(EPOCH FROM (NOW() - p.published_at)) / 3600.0, 1.0 / 3600.0))
+             + COALESCE(ls.likes_168h, 0)::float
+               / LEAST(168.0, GREATEST(EXTRACT(EPOCH FROM (NOW() - p.published_at)) / 3600.0, 1.0 / 3600.0))
+             + (COALESCE(ls.likes_24h, 0)::float / 24.0)
+             - (COALESCE(ls.likes_48h, 0)::float / 48.0)
+             + (COALESCE(ls.likes_168h, 0)::float / 168.0)
+             - (COALESCE(ls.likes_336h, 0)::float / 336.0)
+           ) / 4.0
+         ) DESC, p.published_at DESC`;
 }
 
 export function registerQuizRoutes(app, pool, requireUser) {
@@ -379,8 +407,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
                   SELECT 1 FROM published_quiz_likes l
                   WHERE l.quiz_id = p.id AND l.user_id = $1
                 ) AS liked
-         FROM published_quizzes p
-         JOIN users u ON u.id = p.user_id
+         ${communityFromSql(sort)}
          WHERE NOT p.unlisted
          ORDER BY ${communityOrderBy(sort)}
          LIMIT 100`,
