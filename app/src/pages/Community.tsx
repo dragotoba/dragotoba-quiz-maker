@@ -4,11 +4,14 @@ import AccountButton from "@/components/AccountButton";
 import { getToken } from "@/lib/auth";
 import {
   getCommunityQuiz,
+  getCommunityQuizResult,
   getPublishedQuiz,
   listCommunityQuizzes,
+  saveCommunityQuizResult,
   toggleCommunityLike,
   type CommunityQuizSummary,
   type CommunitySort,
+  type SavedCommunityResult,
 } from "@/lib/quizStorage";
 import { CreateQuizEditor, parseStoredQuiz } from "./CreateQuiz";
 
@@ -38,6 +41,8 @@ export default function Community() {
   const [playQuiz, setPlayQuiz] = useState<ReturnType<typeof parseStoredQuiz> | null>(
     null,
   );
+  const [playResults, setPlayResults] = useState<SavedCommunityResult | null>(null);
+  const [savedResult, setSavedResult] = useState<SavedCommunityResult | null>(null);
   const [playBusy, setPlayBusy] = useState(false);
   const [playError, setPlayError] = useState("");
   const [likeBusy, setLikeBusy] = useState(false);
@@ -99,6 +104,7 @@ export default function Community() {
   useEffect(() => {
     setCopied(false);
     setPlayError("");
+    setSavedResult(quizId ? getCommunityQuizResult(quizId) : null);
   }, [quizId]);
 
   useEffect(() => {
@@ -157,6 +163,7 @@ export default function Community() {
     setPlayError("");
     try {
       const doc = await getPublishedQuiz(selected.id);
+      setPlayResults(null);
       setPlayQuiz(parseStoredQuiz(doc));
     } catch (err) {
       setPlayError(err instanceof Error ? err.message : "Could not load quiz.");
@@ -165,13 +172,45 @@ export default function Community() {
     }
   }
 
+  async function handleViewLastResult() {
+    if (!selected || playBusy || !savedResult) return;
+    setPlayBusy(true);
+    setPlayError("");
+    try {
+      const doc = await getPublishedQuiz(selected.id);
+      setPlayResults(savedResult);
+      setPlayQuiz(parseStoredQuiz(doc));
+    } catch (err) {
+      setPlayError(err instanceof Error ? err.message : "Could not load results.");
+    } finally {
+      setPlayBusy(false);
+    }
+  }
+
   if (playQuiz) {
     return (
       <CreateQuizEditor
-        key={`${playQuiz.id}-${playQuiz.updatedAt}`}
+        key={`${playQuiz.id}-${playQuiz.updatedAt}-${playResults ? "results" : "play"}`}
         initialQuiz={playQuiz}
         playOnly
-        onExitPlay={() => setPlayQuiz(null)}
+        playResults={playResults}
+        onPlayResults={(screen) => {
+          saveCommunityQuizResult(
+            playQuiz.id,
+            screen.projectVariables,
+            screen.localVariables,
+          );
+          setSavedResult({
+            quizId: playQuiz.id,
+            savedAt: Date.now(),
+            projectVariables: screen.projectVariables,
+            localVariables: screen.localVariables,
+          });
+        }}
+        onExitPlay={() => {
+          setPlayQuiz(null);
+          setPlayResults(null);
+        }}
       />
     );
   }
@@ -364,6 +403,16 @@ export default function Community() {
                   >
                     {playBusy ? "Loading…" : "Play quiz"}
                   </button>
+                  {savedResult ? (
+                    <button
+                      type="button"
+                      disabled={playBusy}
+                      onClick={() => void handleViewLastResult()}
+                      className="mt-2 w-full cursor-pointer rounded-full border border-[#2f5d76] bg-white px-6 py-3 text-sm font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/5 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      View last result
+                    </button>
+                  ) : null}
                 </div>
               </>
             ) : (
