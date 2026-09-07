@@ -19,6 +19,8 @@ export type AnswerEffect = {
   variableId: string;
   operation: EffectOperation;
   value: VariableValue;
+  /** When set, the RHS comes from this variable instead of `value`. */
+  valueVariableId?: string | null;
 };
 
 export type AnswerOption = {
@@ -161,17 +163,26 @@ export function applyEffects(
 
     if (variable.type === "bool" || variable.type === "string") {
       if (effect.operation === "set") {
-        variable.value = coerceValue(variable.type, effect.value);
+        const fromVar = effect.valueVariableId
+          ? findVariable(project, local, effect.valueVariableId)
+          : undefined;
+        variable.value = coerceValue(
+          variable.type,
+          fromVar ? fromVar.value : effect.value,
+        );
       }
       continue;
     }
 
     const current = numericOf(variable);
-    const amount = Number(effect.value);
+    const fromVar = effect.valueVariableId
+      ? findVariable(project, local, effect.valueVariableId)
+      : undefined;
+    const amount = fromVar ? numericOf(fromVar) : Number(effect.value);
     const rhs = Number.isFinite(amount) ? amount : 0;
 
     if (effect.operation === "set") {
-      variable.value = Number.isFinite(amount) ? amount : 0;
+      variable.value = rhs;
       continue;
     }
     if (effect.operation === "add") {

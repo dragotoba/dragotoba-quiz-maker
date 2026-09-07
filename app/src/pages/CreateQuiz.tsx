@@ -114,6 +114,8 @@ type AnswerEffect = {
   operation: EffectOperation;
   /** Amount / set-to value; for bool set, 0 = false and 1 = true. */
   value: VariableValue;
+  /** When set, the RHS comes from this variable instead of `value`. */
+  valueVariableId?: string | null;
 };
 
 type VariableType = "number" | "bool" | "string";
@@ -1447,7 +1449,43 @@ function createDefaultEffect(variableId = ""): AnswerEffect {
     variableId,
     operation: "set",
     value: 0,
+    valueVariableId: null,
   };
+}
+
+function normalizeEffect(raw: unknown): AnswerEffect | null {
+  if (!raw || typeof raw !== "object") return null;
+  const effect = raw as Record<string, unknown>;
+  const operation =
+    effect.operation === "add" ||
+    effect.operation === "subtract" ||
+    effect.operation === "multiply" ||
+    effect.operation === "divide" ||
+    effect.operation === "set"
+      ? effect.operation
+      : "set";
+  return {
+    id: typeof effect.id === "string" ? effect.id : crypto.randomUUID(),
+    variableId: typeof effect.variableId === "string" ? effect.variableId : "",
+    operation,
+    value:
+      typeof effect.value === "string"
+        ? effect.value
+        : typeof effect.value === "number" && Number.isFinite(effect.value)
+          ? effect.value
+          : 0,
+    valueVariableId:
+      typeof effect.valueVariableId === "string" && effect.valueVariableId
+        ? effect.valueVariableId
+        : null,
+  };
+}
+
+function normalizeEffects(raw: unknown): AnswerEffect[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map(normalizeEffect)
+    .filter((effect): effect is AnswerEffect => effect !== null);
 }
 
 function cloneAnswersWithNewIds(answers: AnswerOption[]): AnswerOption[] {
@@ -1727,6 +1765,11 @@ function EffectsEditor({
           const operationOptions = setOnly
             ? EFFECT_OPERATIONS.filter((op) => op.value === "set")
             : EFFECT_OPERATIONS;
+          const usesVariableValue =
+            varType === "number" && Boolean(effect.valueVariableId);
+          const numberVariables = variables.filter(
+            (variable) => variable.type === "number",
+          );
 
           return (
             <div
@@ -1751,6 +1794,8 @@ function EffectsEditor({
                           ? "set"
                           : effect.operation,
                       value: coerceValueForType(nextType, effect.value),
+                      valueVariableId:
+                        nextType === "number" ? effect.valueVariableId ?? null : null,
                     });
                   }}
                   className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
@@ -1806,6 +1851,7 @@ function EffectsEditor({
                         onCheckpoint();
                         onUpdateEffect(effect.id, {
                           value: e.target.checked ? 1 : 0,
+                          valueVariableId: null,
                         });
                       }}
                       className="cursor-pointer"
@@ -1821,21 +1867,75 @@ function EffectsEditor({
                     aria-label="Effect text"
                     onFocus={onCheckpoint}
                     onChange={(e) =>
-                      onUpdateEffect(effect.id, { value: e.target.value })
+                      onUpdateEffect(effect.id, {
+                        value: e.target.value,
+                        valueVariableId: null,
+                      })
                     }
                     className="min-w-0 w-24 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
                   />
                 ) : (
-                  <DeferredNumberInput
-                    step="any"
-                    value={typeof effect.value === "number" ? effect.value : 0}
-                    aria-label="Effect amount"
-                    onCheckpoint={onCheckpoint}
-                    onChange={(next) =>
-                      onUpdateEffect(effect.id, { value: next })
-                    }
-                    className="w-20 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
-                  />
+                  <>
+                    <select
+                      aria-label="Effect value source"
+                      value={usesVariableValue ? "variable" : "number"}
+                      onFocus={onCheckpoint}
+                      onChange={(e) => {
+                        if (e.target.value === "variable") {
+                          const first =
+                            numberVariables.find((v) => v.id !== effect.variableId) ??
+                            numberVariables[0];
+                          onUpdateEffect(effect.id, {
+                            valueVariableId: first?.id ?? "",
+                          });
+                        } else {
+                          onUpdateEffect(effect.id, { valueVariableId: null });
+                        }
+                      }}
+                      className="w-[4.75rem] shrink-0 rounded border border-black/15 bg-white px-1 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
+                    >
+                      <option value="number">number</option>
+                      <option value="variable">variable</option>
+                    </select>
+                    {usesVariableValue ? (
+                      <select
+                        aria-label="Effect value variable"
+                        value={effect.valueVariableId ?? ""}
+                        onFocus={onCheckpoint}
+                        onChange={(e) =>
+                          onUpdateEffect(effect.id, {
+                            valueVariableId: e.target.value || null,
+                          })
+                        }
+                        className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
+                      >
+                        <option value="">
+                          {numberVariables.length === 0
+                            ? "No variables"
+                            : "Variable…"}
+                        </option>
+                        {numberVariables.map((variable) => (
+                          <option key={variable.id} value={variable.id}>
+                            {variable.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <DeferredNumberInput
+                        step="any"
+                        value={typeof effect.value === "number" ? effect.value : 0}
+                        aria-label="Effect amount"
+                        onCheckpoint={onCheckpoint}
+                        onChange={(next) =>
+                          onUpdateEffect(effect.id, {
+                            value: next,
+                            valueVariableId: null,
+                          })
+                        }
+                        className="w-20 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
+                      />
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -4108,7 +4208,7 @@ function normalizeCanvasBox(raw: unknown): CanvasBox | null {
       x: box.x,
       y: box.y,
       kind: box.kind,
-      effects: Array.isArray(box.effects) ? (box.effects as AnswerEffect[]) : [],
+      effects: normalizeEffects(box.effects),
     };
   }
 
@@ -4118,7 +4218,7 @@ function normalizeCanvasBox(raw: unknown): CanvasBox | null {
       x: box.x,
       y: box.y,
       kind: "section-changer",
-      effects: Array.isArray(box.effects) ? (box.effects as AnswerEffect[]) : [],
+      effects: normalizeEffects(box.effects),
       targetSection:
         typeof box.targetSection === "string" && box.targetSection
           ? box.targetSection
@@ -4149,7 +4249,7 @@ function normalizeAnswer(raw: unknown): AnswerOption | null {
   return {
     id: answer.id,
     name: typeof answer.name === "string" ? answer.name : "",
-    effects: Array.isArray(answer.effects) ? (answer.effects as AnswerEffect[]) : [],
+    effects: normalizeEffects(answer.effects),
     color,
     textColor:
       parseHexColor(answer.textColor) ?? contrastTextOn(color),
