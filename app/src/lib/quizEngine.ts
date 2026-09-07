@@ -19,6 +19,8 @@ export type AnswerEffect = {
   variableId: string;
   operation: EffectOperation;
   value: VariableValue;
+  /** When set, the right-hand side comes from this variable instead of `value`. */
+  valueVariableId?: string;
 };
 
 export type AnswerOption = {
@@ -34,6 +36,8 @@ export type TransitionCondition = {
   variableId: string;
   operator: ConditionOperator;
   value: VariableValue;
+  /** When set, the right-hand side comes from this variable instead of `value`. */
+  valueVariableId?: string;
   join: ConditionJoin;
 };
 
@@ -149,6 +153,17 @@ function findVariable(
   return project.find((variable) => variable.id === id) ?? local.find((variable) => variable.id === id);
 }
 
+function resolveOperandValue(
+  project: ProjectVariable[],
+  local: ProjectVariable[],
+  value: VariableValue,
+  valueVariableId: string | undefined,
+): VariableValue {
+  if (!valueVariableId) return value;
+  const source = findVariable(project, local, valueVariableId);
+  return source ? source.value : value;
+}
+
 export function applyEffects(
   project: ProjectVariable[],
   local: ProjectVariable[],
@@ -158,16 +173,22 @@ export function applyEffects(
   for (const effect of effects) {
     const variable = findVariable(project, local, effect.variableId);
     if (!variable) continue;
+    const raw = resolveOperandValue(
+      project,
+      local,
+      effect.value,
+      effect.valueVariableId,
+    );
 
     if (variable.type === "bool" || variable.type === "string") {
       if (effect.operation === "set") {
-        variable.value = coerceValue(variable.type, effect.value);
+        variable.value = coerceValue(variable.type, raw);
       }
       continue;
     }
 
     const current = numericOf(variable);
-    const amount = Number(effect.value);
+    const amount = Number(raw);
     const rhs = Number.isFinite(amount) ? amount : 0;
 
     if (effect.operation === "set") {
@@ -243,7 +264,16 @@ export function evaluateConditions(
     const condition = conditions[i];
     const variable = findVariable(project, local, condition.variableId);
     const ok = variable
-      ? compareValues(variable, condition.operator, condition.value)
+      ? compareValues(
+          variable,
+          condition.operator,
+          resolveOperandValue(
+            project,
+            local,
+            condition.value,
+            condition.valueVariableId,
+          ),
+        )
       : false;
 
     if (i > 0 && condition.join === "or") {
