@@ -8,6 +8,7 @@ import {
   submitAnswer,
   type QuizPlayScreen,
   type QuizQuestionScreen,
+  type QuizResultsScreen,
 } from "@/lib/quizEngine";
 import {
   DEFAULT_PROJECT_NAME,
@@ -16,6 +17,7 @@ import {
   loadStoredQuiz,
   nextSectionName,
   normalizeListing,
+  duplicateStoredQuiz,
   publishStoredQuiz,
   saveStoredQuiz,
   type QuizListing,
@@ -114,8 +116,8 @@ type AnswerEffect = {
   operation: EffectOperation;
   /** Amount / set-to value; for bool set, 0 = false and 1 = true. */
   value: VariableValue;
-  /** When set, the RHS comes from this variable instead of `value`. */
-  valueVariableId?: string | null;
+  /** True when inserted by "Add Variables To All Effects" and not edited yet. */
+  bulk?: boolean;
 };
 
 type VariableType = "number" | "bool" | "string";
@@ -1443,49 +1445,22 @@ function createDefaultAnswer(): AnswerOption {
   };
 }
 
-function createDefaultEffect(variableId = ""): AnswerEffect {
+function createDefaultEffect(
+  variableId = "",
+  variableType?: VariableType,
+  bulk = false,
+): AnswerEffect {
   return {
     id: crypto.randomUUID(),
     variableId,
-    operation: "set",
+    operation: isSetOnlyVariableType(variableType) ? "set" : "add",
     value: 0,
-    valueVariableId: null,
+    ...(bulk ? { bulk: true } : {}),
   };
 }
 
-function normalizeEffect(raw: unknown): AnswerEffect | null {
-  if (!raw || typeof raw !== "object") return null;
-  const effect = raw as Record<string, unknown>;
-  const operation =
-    effect.operation === "add" ||
-    effect.operation === "subtract" ||
-    effect.operation === "multiply" ||
-    effect.operation === "divide" ||
-    effect.operation === "set"
-      ? effect.operation
-      : "set";
-  return {
-    id: typeof effect.id === "string" ? effect.id : crypto.randomUUID(),
-    variableId: typeof effect.variableId === "string" ? effect.variableId : "",
-    operation,
-    value:
-      typeof effect.value === "string"
-        ? effect.value
-        : typeof effect.value === "number" && Number.isFinite(effect.value)
-          ? effect.value
-          : 0,
-    valueVariableId:
-      typeof effect.valueVariableId === "string" && effect.valueVariableId
-        ? effect.valueVariableId
-        : null,
-  };
-}
-
-function normalizeEffects(raw: unknown): AnswerEffect[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .map(normalizeEffect)
-    .filter((effect): effect is AnswerEffect => effect !== null);
+function isBulkEffectForVariable(effect: AnswerEffect, variableId: string) {
+  return effect.bulk === true && effect.variableId === variableId;
 }
 
 function cloneAnswersWithNewIds(answers: AnswerOption[]): AnswerOption[] {
@@ -1500,11 +1475,11 @@ function cloneAnswersWithNewIds(answers: AnswerOption[]): AnswerOption[] {
 }
 
 const EFFECT_OPERATIONS: { value: EffectOperation; label: string }[] = [
-  { value: "set", label: "set" },
   { value: "add", label: "add" },
   { value: "subtract", label: "subtract" },
   { value: "multiply", label: "multiply" },
   { value: "divide", label: "divide" },
+  { value: "set", label: "set" },
 ];
 
 const CONDITION_OPERATORS: { value: ConditionOperator; label: string }[] = [
@@ -1956,6 +1931,90 @@ function EffectsEditor({
         +
       </button>
     </>
+  );
+}
+
+type BulkAddVariablesButtonProps = {
+  variables: ProjectVariable[];
+  answers: AnswerOption[];
+  onToggle: (variable: ProjectVariable, enabled: boolean) => void;
+};
+
+function BulkAddVariablesButton({
+  variables,
+  answers,
+  onToggle,
+}: BulkAddVariablesButtonProps) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (rootRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative min-w-0 shrink">
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="rounded-full border border-black/15 bg-white px-2.5 py-1 text-center text-[10px] font-medium leading-tight text-black hover:bg-black/5"
+      >
+        Add Variables To All Effects
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute top-full right-0 z-50 mt-1 max-h-56 w-56 overflow-y-auto rounded-lg border border-black/15 bg-white py-1 shadow-[0_8px_24px_rgba(0,0,0,0.12)]"
+        >
+          {variables.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-black/50">No variables</p>
+          ) : (
+            variables.map((variable) => {
+              const checked =
+                answers.length > 0 &&
+                answers.every((answer) =>
+                  answer.effects.some((effect) =>
+                    isBulkEffectForVariable(effect, variable.id),
+                  ),
+                );
+              return (
+                <label
+                  key={variable.id}
+                  className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs text-black hover:bg-black/5"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    aria-label={`Add ${variable.name} to all effects`}
+                    onChange={(e) => onToggle(variable, e.target.checked)}
+                    className="h-3.5 w-3.5 cursor-pointer"
+                  />
+                  <span className="min-w-0 truncate">
+                    {variable.name}
+                    {variableTypeLabel(variable.type)}
+                  </span>
+                </label>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -3023,12 +3082,12 @@ function ResultsColorPicker({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setWheelOpen(false);
     };
-    window.addEventListener("pointerdown", onDown);
+    window.addEventListener("pointerdown", onDown, true);
     window.addEventListener("keydown", onKey);
     window.addEventListener("resize", placeMenu);
     window.addEventListener("scroll", placeMenu, true);
     return () => {
-      window.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("pointerdown", onDown, true);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", placeMenu);
       window.removeEventListener("scroll", placeMenu, true);
@@ -5760,26 +5819,27 @@ export function parseStoredQuiz(doc: StoredQuizDocument): PersistedQuiz {
   };
 }
 
+function toStoredQuiz(quiz: PersistedQuiz): StoredQuizDocument {
+  return {
+    version: 1,
+    id: quiz.id,
+    projectName: quiz.projectName,
+    updatedAt: quiz.updatedAt,
+    variables: quiz.variables,
+    defaultAnswers: quiz.defaultAnswers,
+    defaultQuestionColor: quiz.defaultQuestionColor,
+    defaultAnswerColor: quiz.defaultAnswerColor,
+    defaultAnswerTextColor: quiz.defaultAnswerTextColor,
+    sections: quiz.sections,
+    activeSectionId: quiz.activeSectionId,
+    results: quiz.results,
+    quizUi: quiz.quizUi,
+    listing: quiz.listing,
+  };
+}
+
 function persistQuiz(quiz: PersistedQuiz, options?: { keepalive?: boolean }) {
-  return saveStoredQuiz(
-    {
-      version: 1,
-      id: quiz.id,
-      projectName: quiz.projectName,
-      updatedAt: quiz.updatedAt,
-      variables: quiz.variables,
-      defaultAnswers: quiz.defaultAnswers,
-      defaultQuestionColor: quiz.defaultQuestionColor,
-      defaultAnswerColor: quiz.defaultAnswerColor,
-      defaultAnswerTextColor: quiz.defaultAnswerTextColor,
-      sections: quiz.sections,
-      activeSectionId: quiz.activeSectionId,
-      results: quiz.results,
-      quizUi: quiz.quizUi,
-      listing: quiz.listing,
-    },
-    options,
-  );
+  return saveStoredQuiz(toStoredQuiz(quiz), options);
 }
 
 function cloneSnapshot(snapshot: EditorSnapshot): EditorSnapshot {
@@ -5864,12 +5924,19 @@ export function CreateQuizEditor({
   initialQuiz,
   initiallyPublished = false,
   playOnly = false,
+  playResults = null,
   onExitPlay,
+  onPlayResults,
 }: {
   initialQuiz: PersistedQuiz;
   initiallyPublished?: boolean;
   playOnly?: boolean;
+  playResults?: {
+    projectVariables: ProjectVariable[];
+    localVariables: ProjectVariable[];
+  } | null;
   onExitPlay?: () => void;
+  onPlayResults?: (screen: QuizResultsScreen) => void;
 }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -5877,7 +5944,14 @@ export function CreateQuizEditor({
     initialQuiz.sections.find((s) => s.id === initialQuiz.activeSectionId) ??
     initialQuiz.sections[0];
   const playBoot = playOnly
-    ? startQuiz(initialQuiz.sections, initialQuiz.variables)
+    ? playResults
+      ? {
+          kind: "results" as const,
+          projectVariables: playResults.projectVariables,
+          localVariables: playResults.localVariables,
+          tieBreaks: {},
+        }
+      : startQuiz(initialQuiz.sections, initialQuiz.variables)
     : null;
 
   const quizIdRef = useRef(initialQuiz.id);
@@ -5939,6 +6013,8 @@ export function CreateQuizEditor({
   const [published, setPublished] = useState(initiallyPublished);
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishError, setPublishError] = useState("");
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copyError, setCopyError] = useState("");
   const [quizScreen, setQuizScreen] = useState<QuizPlayScreen | null>(playBoot);
   const [quizGraph, setQuizGraph] = useState<QuizSection[] | null>(
     playOnly ? initialQuiz.sections : null,
@@ -5949,6 +6025,7 @@ export function CreateQuizEditor({
   const [quizSelectedAnswerId, setQuizSelectedAnswerId] = useState<string | null>(
     null,
   );
+  const [quizAutoAdvance, setQuizAutoAdvance] = useState(false);
   const [axisLabelHeights, setAxisLabelHeights] = useState<Record<string, number>>(
     {},
   );
@@ -6607,7 +6684,7 @@ export function CreateQuizEditor({
     setResultsPreview(false);
   }
 
-  function showQuizResults() {
+  function showQuizResults(resultsScreen?: QuizResultsScreen) {
     setEditorView("results");
     setResultsPreview(true);
     setSelectedResultsTextId(null);
@@ -6620,6 +6697,9 @@ export function CreateQuizEditor({
     if (viewport) {
       viewport.scrollTop = 0;
       viewport.scrollLeft = 0;
+    }
+    if (playOnly && !playResults && resultsScreen) {
+      onPlayResults?.(resultsScreen);
     }
   }
 
@@ -6636,7 +6716,7 @@ export function CreateQuizEditor({
     quizTieBreaksRef.current = screen.tieBreaks;
     setQuizScreen(screen);
     if (screen.kind === "results") {
-      showQuizResults();
+      showQuizResults(screen);
     } else {
       setEditorView("section");
       setResultsPreview(false);
@@ -6681,21 +6761,21 @@ export function CreateQuizEditor({
     });
   }
 
-  function quizGoNext() {
+  function quizGoNext(selectedAnswerId = quizSelectedAnswerId) {
     const screen = quizScreenRef.current;
     if (!screen || screen.kind !== "question" || !quizGraph) return;
     const question = findQuestionBox(quizGraph, screen);
     const answers = question?.answers ?? [];
-    if (answers.length > 0 && !quizSelectedAnswerId) return;
+    if (answers.length > 0 && !selectedAnswerId) return;
 
     const snapshot = {
       ...screen,
-      selectedAnswerId: quizSelectedAnswerId,
+      selectedAnswerId,
     };
     const next = submitAnswer(
       quizGraph,
       screen,
-      quizSelectedAnswerId,
+      selectedAnswerId,
       quizTieBreaksRef.current,
     );
     quizTieBreaksRef.current = next.tieBreaks;
@@ -6703,7 +6783,7 @@ export function CreateQuizEditor({
     setQuizSelectedAnswerId(null);
     setQuizScreen(next);
     if (next.kind === "results") {
-      showQuizResults();
+      showQuizResults(next);
     } else {
       setEditorView("section");
       setResultsPreview(false);
@@ -6940,6 +7020,11 @@ export function CreateQuizEditor({
     observer.observe(el);
     return () => observer.disconnect();
   }, [editorView]);
+
+  useEffect(() => {
+    if (!playOnly || playResults || !playBoot || playBoot.kind !== "results") return;
+    onPlayResults?.(playBoot);
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -9775,6 +9860,15 @@ export function CreateQuizEditor({
     setBoxes((prev) =>
       prev.map((box) => {
         if (box.id !== selectedId || box.kind !== "question") return box;
+        const bulkVars = allVariables.filter(
+          (variable) =>
+            box.answers.length > 0 &&
+            box.answers.every((answer) =>
+              answer.effects.some((effect) =>
+                isBulkEffectForVariable(effect, variable.id),
+              ),
+            ),
+        );
         return {
           ...box,
           answers: [
@@ -9782,7 +9876,9 @@ export function CreateQuizEditor({
             {
               id,
               name: nextAnsName(box.answers),
-              effects: [],
+              effects: bulkVars.map((variable) =>
+                createDefaultEffect(variable.id, variable.type, true),
+              ),
               color: defaultAnswerColorRef.current,
               textColor: defaultAnswerTextColorRef.current,
             },
@@ -9822,11 +9918,51 @@ export function CreateQuizEditor({
     );
   }
 
+  function toggleBulkVariableOnAnswers(
+    variable: ProjectVariable,
+    enabled: boolean,
+  ) {
+    if (!selectedId) return;
+    pushHistory();
+    setBoxes((prev) =>
+      prev.map((box) => {
+        if (box.id !== selectedId || box.kind !== "question") return box;
+        return {
+          ...box,
+          answers: box.answers.map((answer) => {
+            if (enabled) {
+              if (
+                answer.effects.some((effect) =>
+                  isBulkEffectForVariable(effect, variable.id),
+                )
+              ) {
+                return answer;
+              }
+              return {
+                ...answer,
+                effects: [
+                  ...answer.effects,
+                  createDefaultEffect(variable.id, variable.type, true),
+                ],
+              };
+            }
+            return {
+              ...answer,
+              effects: answer.effects.filter(
+                (effect) => !isBulkEffectForVariable(effect, variable.id),
+              ),
+            };
+          }),
+        };
+      }),
+    );
+  }
+
   function addEffect(answerId: string) {
     if (!selectedId) return;
     pushHistory();
-    const defaultVarId =
-      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
+    const defaultVar =
+      variablesRef.current[0] ?? localVariablesRef.current[0] ?? null;
     setBoxes((prev) =>
       prev.map((box) => {
         if (box.id !== selectedId || box.kind !== "question") return box;
@@ -9836,7 +9972,10 @@ export function CreateQuizEditor({
             answer.id === answerId
               ? {
                   ...answer,
-                  effects: [...answer.effects, createDefaultEffect(defaultVarId)],
+                  effects: [
+                    ...answer.effects,
+                    createDefaultEffect(defaultVar?.id ?? "", defaultVar?.type),
+                  ],
                 }
               : answer,
           ),
@@ -9861,7 +10000,9 @@ export function CreateQuizEditor({
             return {
               ...answer,
               effects: answer.effects.map((effect) =>
-                effect.id === effectId ? { ...effect, ...patch } : effect,
+                effect.id === effectId
+                  ? { ...effect, ...patch, bulk: false }
+                  : effect,
               ),
             };
           }),
@@ -9894,14 +10035,17 @@ export function CreateQuizEditor({
   function addBlockEffect() {
     if (!selectedId) return;
     pushHistory();
-    const defaultVarId =
-      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
+    const defaultVar =
+      variablesRef.current[0] ?? localVariablesRef.current[0] ?? null;
     setBoxes((prev) =>
       prev.map((box) =>
         box.id === selectedId && isEffectBlock(box)
           ? {
               ...box,
-              effects: [...box.effects, createDefaultEffect(defaultVarId)],
+              effects: [
+                ...box.effects,
+                createDefaultEffect(defaultVar?.id ?? "", defaultVar?.type),
+              ],
             }
           : box,
       ),
@@ -10116,14 +10260,17 @@ export function CreateQuizEditor({
 
   function addDefaultEffect(answerId: string) {
     pushHistory();
-    const defaultVarId =
-      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
+    const defaultVar =
+      variablesRef.current[0] ?? localVariablesRef.current[0] ?? null;
     setDefaultAnswers((prev) =>
       prev.map((answer) =>
         answer.id === answerId
           ? {
               ...answer,
-              effects: [...answer.effects, createDefaultEffect(defaultVarId)],
+              effects: [
+                ...answer.effects,
+                createDefaultEffect(defaultVar?.id ?? "", defaultVar?.type),
+              ],
             }
           : answer,
       ),
@@ -10191,14 +10338,17 @@ export function CreateQuizEditor({
 
   function addLocalDefaultEffect(answerId: string) {
     pushHistory();
-    const defaultVarId =
-      variablesRef.current[0]?.id ?? localVariablesRef.current[0]?.id ?? "";
+    const defaultVar =
+      variablesRef.current[0] ?? localVariablesRef.current[0] ?? null;
     setLocalDefaultAnswers((prev) =>
       prev.map((answer) =>
         answer.id === answerId
           ? {
               ...answer,
-              effects: [...answer.effects, createDefaultEffect(defaultVarId)],
+              effects: [
+                ...answer.effects,
+                createDefaultEffect(defaultVar?.id ?? "", defaultVar?.type),
+              ],
             }
           : answer,
       ),
@@ -10383,6 +10533,21 @@ export function CreateQuizEditor({
       setPublishError(error instanceof Error ? error.message : "Could not publish quiz.");
     } finally {
       setPublishBusy(false);
+    }
+  }
+
+  async function handleCopyQuiz() {
+    if (copyBusy) return;
+    setCopyBusy(true);
+    setCopyError("");
+    try {
+      const source = getPersistedQuiz();
+      await persistQuiz(source);
+      const copy = await duplicateStoredQuiz(toStoredQuiz(source));
+      navigate(`/quiz/${encodeURIComponent(copy.id)}`);
+    } catch (error) {
+      setCopyError(error instanceof Error ? error.message : "Could not copy quiz.");
+      setCopyBusy(false);
     }
   }
 
@@ -11351,6 +11516,7 @@ export function CreateQuizEditor({
                   Placeholder Answer
                 </QuizUiEditorItem>
               ))}
+              {!(quizAutoAdvance && quizUiPreview) && (
               <QuizUiEditorItem
                 rect={quizUiPage.nextButton}
                 selected={isQuizUiSelected(quizUiPage.nextButton.id)}
@@ -11373,6 +11539,7 @@ export function CreateQuizEditor({
               >
                 Next
               </QuizUiEditorItem>
+              )}
               <QuizUiEditorItem
                 rect={quizUiPage.backButton}
                 selected={isQuizUiSelected(quizUiPage.backButton.id)}
@@ -13120,10 +13287,17 @@ export function CreateQuizEditor({
             />
           </div>
 
-          <section className="mt-6 min-h-0 flex-1 overflow-y-auto">
-            <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+          <div className="mt-6 flex shrink-0 items-center justify-between gap-2">
+            <h2 className="shrink-0 text-sm font-semibold tracking-wide text-black/70 uppercase">
               Answers
             </h2>
+            <BulkAddVariablesButton
+              variables={allVariables}
+              answers={selectedQuestion.answers}
+              onToggle={toggleBulkVariableOnAnswers}
+            />
+          </div>
+          <section className="mt-3 min-h-0 flex-1 overflow-y-auto">
             <AnswersEditor
               answers={selectedQuestion.answers}
               variables={allVariables}
@@ -13249,25 +13423,39 @@ export function CreateQuizEditor({
       )}
 
       {(resultsPreview || quizUiPreview || quizScreen || publishOpen) && (
-        <button
-          type="button"
-          aria-label={
-            quizScreen
-              ? "Exit quiz"
-              : publishOpen
-                ? "Back to editor"
-                : "Exit preview"
-          }
-          onClick={() => {
-            if (quizScreen) exitQuizPlay();
-            else if (publishOpen) setPublishOpen(false);
-            else if (quizUiPreview) exitQuizUiPreview();
-            else exitResultsPreview();
-          }}
-          className="absolute top-4 right-4 z-[90] cursor-pointer rounded-md border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black shadow-sm hover:bg-[#f5f5f5]"
-        >
-          {quizScreen ? "Exit" : publishOpen ? "Back" : "Exit Preview"}
-        </button>
+        <div className="absolute top-4 right-4 z-[90] flex items-center gap-2">
+          {(quizScreen?.kind === "question" || quizUiPreview) && (
+            <label className="flex cursor-pointer items-center gap-2 rounded-md border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black shadow-sm hover:bg-[#f5f5f5]">
+              <input
+                type="checkbox"
+                checked={quizAutoAdvance}
+                aria-label="Auto advance"
+                onChange={(e) => setQuizAutoAdvance(e.target.checked)}
+                className="h-4 w-4 cursor-pointer"
+              />
+              Auto advance
+            </label>
+          )}
+          <button
+            type="button"
+            aria-label={
+              quizScreen
+                ? "Exit quiz"
+                : publishOpen
+                  ? "Back to editor"
+                  : "Exit preview"
+            }
+            onClick={() => {
+              if (quizScreen) exitQuizPlay();
+              else if (publishOpen) setPublishOpen(false);
+              else if (quizUiPreview) exitQuizUiPreview();
+              else exitResultsPreview();
+            }}
+            className="cursor-pointer rounded-md border border-black/15 bg-white px-3 py-2 text-sm font-medium text-black shadow-sm hover:bg-[#f5f5f5]"
+          >
+            {quizScreen ? "Exit" : publishOpen ? "Back" : "Exit Preview"}
+          </button>
+        </div>
       )}
 
       {publishOpen && (
@@ -13671,6 +13859,17 @@ export function CreateQuizEditor({
                   >
                     {published ? "Update Quiz" : "Publish"}
                   </button>
+                  <button
+                    type="button"
+                    disabled={copyBusy}
+                    onClick={() => void handleCopyQuiz()}
+                    className="mt-3 w-full cursor-pointer rounded-lg border border-[#2f5d76] bg-white px-3 py-2 text-sm font-medium text-[#2f5d76] hover:bg-[#2f5d76]/5 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {copyBusy ? "Copying…" : "Make a copy"}
+                  </button>
+                  {copyError ? (
+                    <p className="mt-2 text-xs text-[#c0392b]">{copyError}</p>
+                  ) : null}
                 </section>
               </>
             ) : showResultsSettings ? (
@@ -13987,7 +14186,13 @@ export function CreateQuizEditor({
                 <button
                   key={answer.id}
                   type="button"
-                  onClick={() => setQuizSelectedAnswerId(answer.id)}
+                  onClick={() => {
+                    if (quizAutoAdvance) {
+                      quizGoNext(answer.id);
+                      return;
+                    }
+                    setQuizSelectedAnswerId(answer.id);
+                  }}
                   className={`absolute cursor-pointer overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm transition ${
                     selected
                       ? "ring-2 ring-[#2f5d76] ring-offset-2 brightness-[0.85]"
@@ -14007,10 +14212,10 @@ export function CreateQuizEditor({
               );
             })}
 
-            {quizCanGoNext && (
+            {quizCanGoNext && (!quizAutoAdvance || quizAnswers.length === 0) && (
               <button
                 type="button"
-                onClick={quizGoNext}
+                onClick={() => quizGoNext()}
                 className="absolute cursor-pointer overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm hover:brightness-90"
                 style={{
                   left: quizPlayLayout.nextButton.x,
