@@ -116,6 +116,8 @@ type AnswerEffect = {
   operation: EffectOperation;
   /** Amount / set-to value; for bool set, 0 = false and 1 = true. */
   value: VariableValue;
+  /** When set, the right-hand side comes from this variable instead of `value`. */
+  valueVariableId?: string;
   /** True when inserted by "Add Variables To All Effects" and not edited yet. */
   bulk?: boolean;
 };
@@ -139,6 +141,8 @@ type TransitionCondition = {
   operator: ConditionOperator;
   /** Compare-to value; for bools, 0 = false and 1 = true. */
   value: VariableValue;
+  /** When set, the right-hand side comes from this variable instead of `value`. */
+  valueVariableId?: string;
   /** How this condition combines with the previous one. Unused on the first. */
   join: ConditionJoin;
 };
@@ -1523,8 +1527,163 @@ function normalizeConditions(raw: unknown): TransitionCondition[] {
           : typeof c.value === "number" && Number.isFinite(c.value)
             ? c.value
             : 0,
+      valueVariableId:
+        typeof c.valueVariableId === "string" && c.valueVariableId
+          ? c.valueVariableId
+          : undefined,
       join: c.join === "or" ? ("or" as const) : ("and" as const),
     }));
+}
+
+function normalizeAnswerEffect(raw: unknown): AnswerEffect | null {
+  if (!raw || typeof raw !== "object") return null;
+  const effect = raw as Record<string, unknown>;
+  if (typeof effect.id !== "string") return null;
+  const operation =
+    effect.operation === "add" ||
+    effect.operation === "subtract" ||
+    effect.operation === "multiply" ||
+    effect.operation === "divide" ||
+    effect.operation === "set"
+      ? effect.operation
+      : "add";
+  return {
+    id: effect.id,
+    variableId: typeof effect.variableId === "string" ? effect.variableId : "",
+    operation,
+    value:
+      typeof effect.value === "string"
+        ? effect.value
+        : typeof effect.value === "number" && Number.isFinite(effect.value)
+          ? effect.value
+          : 0,
+    valueVariableId:
+      typeof effect.valueVariableId === "string" && effect.valueVariableId
+        ? effect.valueVariableId
+        : undefined,
+    ...(effect.bulk === true ? { bulk: true } : {}),
+  };
+}
+
+function normalizeAnswerEffects(raw: unknown): AnswerEffect[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map(normalizeAnswerEffect)
+    .filter((effect): effect is AnswerEffect => effect !== null);
+}
+
+type OperandEditorProps = {
+  varType: VariableType;
+  value: VariableValue;
+  valueVariableId: string | undefined;
+  variables: ProjectVariable[];
+  excludeVariableId?: string;
+  valueAriaLabel: string;
+  variableAriaLabel: string;
+  onCheckpoint: () => void;
+  onChange: (patch: {
+    value?: VariableValue;
+    valueVariableId?: string | undefined;
+  }) => void;
+};
+
+function OperandEditor({
+  varType,
+  value,
+  valueVariableId,
+  variables,
+  excludeVariableId,
+  valueAriaLabel,
+  variableAriaLabel,
+  onCheckpoint,
+  onChange,
+}: OperandEditorProps) {
+  const useVariable = valueVariableId !== undefined;
+  const rhsOptions = variables.filter(
+    (variable) =>
+      variable.id !== excludeVariableId &&
+      (variable.type === varType ||
+        (varType === "number" && variable.type === "bool")),
+  );
+
+  return (
+    <>
+      <select
+        aria-label="Operand source"
+        value={useVariable ? "variable" : "literal"}
+        onFocus={onCheckpoint}
+        onChange={(e) => {
+          if (e.target.value === "variable") {
+            const first = rhsOptions[0];
+            onChange({
+              valueVariableId: first?.id ?? "",
+            });
+          } else {
+            onChange({
+              valueVariableId: undefined,
+              value: coerceValueForType(varType, value),
+            });
+          }
+        }}
+        className="w-[4.5rem] shrink-0 rounded border border-black/15 bg-white px-1 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
+      >
+        <option value="literal">value</option>
+        <option value="variable">var</option>
+      </select>
+
+      {useVariable ? (
+        <select
+          aria-label={variableAriaLabel}
+          value={valueVariableId ?? ""}
+          onFocus={onCheckpoint}
+          onChange={(e) => onChange({ valueVariableId: e.target.value })}
+          className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
+        >
+          <option value="">
+            {rhsOptions.length === 0 ? "No variables" : "Variable…"}
+          </option>
+          {rhsOptions.map((variable) => (
+            <option key={variable.id} value={variable.id}>
+              {variable.name}
+              {variableTypeLabel(variable.type)}
+            </option>
+          ))}
+        </select>
+      ) : varType === "bool" ? (
+        <label className="flex shrink-0 items-center gap-1 text-xs text-black/70">
+          <input
+            type="checkbox"
+            checked={value !== 0 && value !== "0"}
+            aria-label={valueAriaLabel}
+            onChange={(e) => {
+              onCheckpoint();
+              onChange({ value: e.target.checked ? 1 : 0 });
+            }}
+            className="cursor-pointer"
+          />
+          <span>{value !== 0 && value !== "0" ? "true" : "false"}</span>
+        </label>
+      ) : varType === "string" ? (
+        <input
+          type="text"
+          value={typeof value === "string" ? value : ""}
+          aria-label={valueAriaLabel}
+          onFocus={onCheckpoint}
+          onChange={(e) => onChange({ value: e.target.value })}
+          className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
+        />
+      ) : (
+        <DeferredNumberInput
+          step="any"
+          value={typeof value === "number" ? value : 0}
+          aria-label={valueAriaLabel}
+          onCheckpoint={onCheckpoint}
+          onChange={(next) => onChange({ value: next })}
+          className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
+        />
+      )}
+    </>
+  );
 }
 
 type ConditionsEditorProps = {
@@ -1604,6 +1763,7 @@ function ConditionsEditor({
                             ? "eq"
                             : condition.operator,
                         value: coerceValueForType(nextType, condition.value),
+                        valueVariableId: undefined,
                       });
                     }}
                     className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
@@ -1639,7 +1799,7 @@ function ConditionsEditor({
                         operator: e.target.value as ConditionOperator,
                       })
                     }
-                    className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
+                    className="min-w-0 w-16 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
                   >
                     {operatorOptions.map((op) => (
                       <option key={op.value} value={op.value}>
@@ -1648,47 +1808,17 @@ function ConditionsEditor({
                     ))}
                   </select>
 
-                  {varType === "bool" ? (
-                    <label className="flex shrink-0 items-center gap-1 text-xs text-black/70">
-                      <input
-                        type="checkbox"
-                        checked={condition.value !== 0 && condition.value !== "0"}
-                        aria-label="Boolean compare value"
-                        onChange={(e) => {
-                          onCheckpoint();
-                          onUpdateCondition(condition.id, {
-                            value: e.target.checked ? 1 : 0,
-                          });
-                        }}
-                        className="cursor-pointer"
-                      />
-                      <span>
-                        {condition.value !== 0 && condition.value !== "0" ? "true" : "false"}
-                      </span>
-                    </label>
-                  ) : varType === "string" ? (
-                    <input
-                      type="text"
-                      value={typeof condition.value === "string" ? condition.value : ""}
-                      aria-label="Condition text"
-                      onFocus={onCheckpoint}
-                      onChange={(e) =>
-                        onUpdateCondition(condition.id, { value: e.target.value })
-                      }
-                      className="min-w-0 w-24 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
-                    />
-                  ) : (
-                    <DeferredNumberInput
-                      step="any"
-                      value={typeof condition.value === "number" ? condition.value : 0}
-                      aria-label="Condition amount"
-                      onCheckpoint={onCheckpoint}
-                      onChange={(next) =>
-                        onUpdateCondition(condition.id, { value: next })
-                      }
-                      className="w-20 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
-                    />
-                  )}
+                  <OperandEditor
+                    varType={varType}
+                    value={condition.value}
+                    valueVariableId={condition.valueVariableId}
+                    variables={variables}
+                    excludeVariableId={condition.variableId}
+                    valueAriaLabel="Condition amount"
+                    variableAriaLabel="Condition compare variable"
+                    onCheckpoint={onCheckpoint}
+                    onChange={(patch) => onUpdateCondition(condition.id, patch)}
+                  />
                 </div>
               </div>
             </div>
@@ -1764,6 +1894,7 @@ function EffectsEditor({
                           ? "set"
                           : effect.operation,
                       value: coerceValueForType(nextType, effect.value),
+                      valueVariableId: undefined,
                     });
                   }}
                   className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
@@ -1800,7 +1931,7 @@ function EffectsEditor({
                       operation: e.target.value as EffectOperation,
                     })
                   }
-                  className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76] disabled:opacity-70"
+                  className="min-w-0 w-20 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76] disabled:opacity-70"
                 >
                   {operationOptions.map((op) => (
                     <option key={op.value} value={op.value}>
@@ -1809,47 +1940,17 @@ function EffectsEditor({
                   ))}
                 </select>
 
-                {varType === "bool" ? (
-                  <label className="flex shrink-0 items-center gap-1 text-xs text-black/70">
-                    <input
-                      type="checkbox"
-                      checked={effect.value !== 0 && effect.value !== "0"}
-                      aria-label="Boolean set value"
-                      onChange={(e) => {
-                        onCheckpoint();
-                        onUpdateEffect(effect.id, {
-                          value: e.target.checked ? 1 : 0,
-                        });
-                      }}
-                      className="cursor-pointer"
-                    />
-                    <span>
-                      {effect.value !== 0 && effect.value !== "0" ? "true" : "false"}
-                    </span>
-                  </label>
-                ) : varType === "string" ? (
-                  <input
-                    type="text"
-                    value={typeof effect.value === "string" ? effect.value : ""}
-                    aria-label="Effect text"
-                    onFocus={onCheckpoint}
-                    onChange={(e) =>
-                      onUpdateEffect(effect.id, { value: e.target.value })
-                    }
-                    className="min-w-0 w-24 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
-                  />
-                ) : (
-                  <DeferredNumberInput
-                    step="any"
-                    value={typeof effect.value === "number" ? effect.value : 0}
-                    aria-label="Effect amount"
-                    onCheckpoint={onCheckpoint}
-                    onChange={(next) =>
-                      onUpdateEffect(effect.id, { value: next })
-                    }
-                    className="w-20 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
-                  />
-                )}
+                <OperandEditor
+                  varType={varType}
+                  value={effect.value}
+                  valueVariableId={effect.valueVariableId}
+                  variables={variables}
+                  excludeVariableId={effect.variableId}
+                  valueAriaLabel="Effect amount"
+                  variableAriaLabel="Effect source variable"
+                  onCheckpoint={onCheckpoint}
+                  onChange={(patch) => onUpdateEffect(effect.id, patch)}
+                />
               </div>
             </div>
           );
@@ -4205,7 +4306,7 @@ function normalizeCanvasBox(raw: unknown): CanvasBox | null {
       x: box.x,
       y: box.y,
       kind: box.kind,
-      effects: Array.isArray(box.effects) ? (box.effects as AnswerEffect[]) : [],
+      effects: Array.isArray(box.effects) ? normalizeAnswerEffects(box.effects) : [],
     };
   }
 
@@ -4215,7 +4316,7 @@ function normalizeCanvasBox(raw: unknown): CanvasBox | null {
       x: box.x,
       y: box.y,
       kind: "section-changer",
-      effects: Array.isArray(box.effects) ? (box.effects as AnswerEffect[]) : [],
+      effects: Array.isArray(box.effects) ? normalizeAnswerEffects(box.effects) : [],
       targetSection:
         typeof box.targetSection === "string" && box.targetSection
           ? box.targetSection
@@ -4246,7 +4347,7 @@ function normalizeAnswer(raw: unknown): AnswerOption | null {
   return {
     id: answer.id,
     name: typeof answer.name === "string" ? answer.name : "",
-    effects: Array.isArray(answer.effects) ? (answer.effects as AnswerEffect[]) : [],
+    effects: Array.isArray(answer.effects) ? normalizeAnswerEffects(answer.effects) : [],
     color,
     textColor:
       parseHexColor(answer.textColor) ?? contrastTextOn(color),
