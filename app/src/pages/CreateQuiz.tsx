@@ -6052,6 +6052,7 @@ export function CreateQuizEditor({
   const [published, setPublished] = useState(initiallyPublished);
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishError, setPublishError] = useState("");
+  const [linkCopied, setLinkCopied] = useState(false);
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyError, setCopyError] = useState("");
   const [quizScreen, setQuizScreen] = useState<QuizPlayScreen | null>(playBoot);
@@ -10553,6 +10554,26 @@ export function CreateQuizEditor({
     setListingSaved(true);
   }
 
+  function unlistedQuizLink() {
+    return `${window.location.origin}/community/${encodeURIComponent(quizIdRef.current)}`;
+  }
+
+  async function handleCopyUnlistedLink() {
+    const url = unlistedQuizLink();
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      const field = document.createElement("textarea");
+      field.value = url;
+      document.body.appendChild(field);
+      field.select();
+      document.execCommand("copy");
+      field.remove();
+    }
+    setLinkCopied(true);
+    window.setTimeout(() => setLinkCopied(false), 1500);
+  }
+
   async function handlePublish() {
     const quiz = getPersistedQuiz();
     if (!getToken()) {
@@ -13559,6 +13580,7 @@ export function CreateQuizEditor({
                 aria-label="Unlisted"
                 onChange={(e) => {
                   setListingSaved(false);
+                  setLinkCopied(false);
                   setListing((prev) => ({ ...prev, unlisted: e.target.checked }));
                 }}
                 className="h-4 w-4 cursor-pointer"
@@ -13568,6 +13590,28 @@ export function CreateQuizEditor({
             <p className="mt-1 pl-6 text-xs text-[#5c6770]">
               Unlisted quizzes won&apos;t appear in public lists.
             </p>
+            {listing.unlisted ? (
+              <div className="mt-3 pl-6">
+                <p className="text-xs font-medium text-[#4a5560]">Access link</p>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <a
+                    href={unlistedQuizLink()}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="min-w-0 flex-1 truncate text-sm text-[#2f5d76] underline-offset-2 hover:underline"
+                  >
+                    {unlistedQuizLink()}
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyUnlistedLink()}
+                    className="shrink-0 cursor-pointer rounded-lg border border-[#2f5d76] bg-white px-3 py-1.5 text-xs font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/5"
+                  >
+                    {linkCopied ? "Copied" : "Copy"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             <div className="mt-8 flex flex-col gap-3">
               <button
