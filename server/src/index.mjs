@@ -121,6 +121,31 @@ app.post("/api/auth/login", async (req, res) => {
       );
       const row = local.rows[0];
       if (!row?.email || !row.dragotoba_account_id) {
+        // #region agent log
+        fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "a58a7b",
+          },
+          body: JSON.stringify({
+            sessionId: "a58a7b",
+            hypothesisId: "C",
+            location: "index.mjs:login",
+            message: "username lookup failed or missing dragotoba_account_id",
+            data: {
+              foundUser: Boolean(row),
+              hasEmail: Boolean(row?.email),
+              hasDragotobaId: Boolean(row?.dragotoba_account_id),
+            },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        console.error("[dbg-a58a7b] username login: missing link", {
+          foundUser: Boolean(row),
+          hasDragotobaId: Boolean(row?.dragotoba_account_id),
+        });
+        // #endregion
         res.status(401).json({ error: "Incorrect email/username or password." });
         return;
       }
@@ -129,6 +154,31 @@ app.post("/api/auth/login", async (req, res) => {
 
     const accounts = await proxyLoginToAccounts(email, parsed.password);
     if (!accounts.ok) {
+      // #region agent log
+      fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Debug-Session-Id": "a58a7b",
+        },
+        body: JSON.stringify({
+          sessionId: "a58a7b",
+          hypothesisId: "D",
+          location: "index.mjs:login",
+          message: "accounts proxy rejected login",
+          data: {
+            status: accounts.status,
+            error: accounts.error,
+            identifierKind: parsed.identifier.includes("@") ? "email" : "username",
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      console.error("[dbg-a58a7b] accounts login rejected", {
+        status: accounts.status,
+        error: accounts.error,
+      });
+      // #endregion
       res.status(accounts.status).json({ error: accounts.error });
       return;
     }
@@ -142,6 +192,26 @@ app.post("/api/auth/login", async (req, res) => {
     );
     const localUser = linked.rows[0];
     if (!localUser) {
+      // #region agent log
+      fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Debug-Session-Id": "a58a7b",
+        },
+        body: JSON.stringify({
+          sessionId: "a58a7b",
+          hypothesisId: "C",
+          location: "index.mjs:login",
+          message: "accounts ok but no linked local user",
+          data: {
+            accountsIdPrefix: String(accounts.user.id).slice(0, 8),
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      console.error("[dbg-a58a7b] login: account not linked");
+      // #endregion
       res.status(403).json({
         error: "Account not linked to Quiz Maker.",
       });
@@ -151,6 +221,31 @@ app.post("/api/auth/login", async (req, res) => {
     await pool.query("UPDATE users SET last_login_at = NOW() WHERE id = $1", [
       localUser.id,
     ]);
+
+    // #region agent log
+    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "a58a7b",
+      },
+      body: JSON.stringify({
+        sessionId: "a58a7b",
+        hypothesisId: "D",
+        location: "index.mjs:login",
+        message: "login success returning accounts token",
+        data: {
+          tokenLen: typeof accounts.token === "string" ? accounts.token.length : 0,
+          localUserIdPrefix: String(localUser.id).slice(0, 8),
+          accountsIdPrefix: String(accounts.user.id).slice(0, 8),
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    console.error("[dbg-a58a7b] login success", {
+      tokenLen: typeof accounts.token === "string" ? accounts.token.length : 0,
+    });
+    // #endregion
 
     res.json({
       token: accounts.token,
@@ -199,6 +294,34 @@ async function requireUser(req, res, next) {
   try {
     const userId = await localUserIdFromToken(pool, token);
     if (!userId) {
+      // #region agent log
+      fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Debug-Session-Id": "a58a7b",
+        },
+        body: JSON.stringify({
+          sessionId: "a58a7b",
+          hypothesisId: "A",
+          location: "index.mjs:requireUser",
+          message: "requireUser 401",
+          data: {
+            path: req.path,
+            hasAuthHeader: Boolean(req.headers.authorization),
+            hasToken: Boolean(token),
+            tokenLen: token ? token.length : 0,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      console.error("[dbg-a58a7b] requireUser 401", {
+        path: req.path,
+        hasAuthHeader: Boolean(req.headers.authorization),
+        hasToken: Boolean(token),
+        tokenLen: token ? token.length : 0,
+      });
+      // #endregion
       res.status(401).json({ error: "Not signed in." });
       return;
     }
