@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "start": "node server.mjs"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@react-oauth/google": "^0.13.5"
+  },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.8",
     "@types/node": "^22.15.29",

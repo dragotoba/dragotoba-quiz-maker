@@ -155,6 +155,14 @@ export async function loginAccount(input: {
   return result.user;
 }
 
+export async function loginWithGoogle(idToken: string): Promise<AuthUser> {
+  const result = await authRequest("/auth/google", { idToken });
+  setSession(result.token, result.user, {
+    needsDisplayName: Boolean(result.needsDisplayName),
+  });
+  return result.user;
+}
+
 export async function updateDisplayName(displayName: string): Promise<AuthUser> {
   const res = await fetch("/api/auth/me", {
     method: "PATCH",

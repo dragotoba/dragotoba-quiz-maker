@@ -1,6 +1,12 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
-import { getStoredUser, safeNextPath, signupAccount } from "@/lib/auth";
+import GoogleSignIn, { isGoogleAuthConfigured } from "@/components/GoogleSignIn";
+import {
+  getStoredUser,
+  loginWithGoogle,
+  safeNextPath,
+  signupAccount,
+} from "@/lib/auth";
 import { migrateLocalQuizzesIfNeeded } from "@/lib/quizStorage";
 
 export default function Signup() {
@@ -15,6 +21,7 @@ export default function Signup() {
   const [error, setError] = useState("");
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const googleEnabled = isGoogleAuthConfigured();
 
   if (existing) {
     return <Navigate to={nextPath} replace />;
@@ -22,6 +29,15 @@ export default function Signup() {
 
   const loginHref =
     nextPath === "/dashboard" ? "/login" : `/login?next=${encodeURIComponent(nextPath)}`;
+
+  async function afterAuth() {
+    try {
+      await migrateLocalQuizzesIfNeeded();
+    } catch {
+      // Dashboard retries the upload if local quizzes remain.
+    }
+    navigate(nextPath, { replace: true });
+  }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -34,12 +50,7 @@ export default function Signup() {
     setBusy(true);
     try {
       await signupAccount({ username, email, password });
-      try {
-        await migrateLocalQuizzesIfNeeded();
-      } catch {
-        // Dashboard retries the upload if local quizzes remain.
-      }
-      navigate(nextPath, { replace: true });
+      await afterAuth();
     } catch (err) {
       const code =
         err && typeof err === "object" && "code" in err
@@ -54,6 +65,35 @@ export default function Signup() {
       }
       setErrorCode(code || null);
       setError(err instanceof Error ? err.message : "Could not create account.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleGoogle(idToken: string) {
+    setError("");
+    setErrorCode(null);
+    setBusy(true);
+    try {
+      await loginWithGoogle(idToken);
+      await afterAuth();
+    } catch (err) {
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? String((err as { code?: string }).code ?? "")
+          : "";
+      const message =
+        err instanceof Error ? err.message : "Could not sign in with Google.";
+      setErrorCode(code || null);
+      setError(message);
+      // Surface conflict copy with login / forgot links when accounts returns 409.
+      if (
+        !code &&
+        /already|exists|linked|conflict/i.test(message)
+      ) {
+        setErrorCode("DRAGOTOBA_ACCOUNT_EXISTS");
+      }
+      throw err;
     } finally {
       setBusy(false);
     }
@@ -77,8 +117,26 @@ export default function Signup() {
             Create account
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-[#4a5560]">
-            Sign up with a username, email, and password.
+            Sign up with Google, or with a username, email, and password.
           </p>
+
+          {googleEnabled ? (
+            <div className="mt-6 space-y-4">
+              <GoogleSignIn
+                disabled={busy}
+                onCredential={handleGoogle}
+                onError={(message) => {
+                  setErrorCode(null);
+                  setError(message);
+                }}
+              />
+              <div className="flex items-center gap-3 text-xs font-medium uppercase tracking-[0.08em] text-[#8a939c]">
+                <span className="h-px flex-1 bg-[#1c2a33]/12" />
+                or
+                <span className="h-px flex-1 bg-[#1c2a33]/12" />
+              </div>
+            </div>
+          ) : null}
 
           <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
             <label className="block text-sm text-[#1c2a33]">
@@ -144,7 +202,8 @@ export default function Signup() {
             {error ? (
               <div className="space-y-2" role="alert">
                 <p className="text-sm font-medium text-[#7a3b3b]">{error}</p>
-                {errorCode === "DRAGOTOBA_ACCOUNT_EXISTS" ? (
+                {errorCode === "DRAGOTOBA_ACCOUNT_EXISTS" ||
+                (errorCode === null && /already|exists|linked|conflict/i.test(error)) ? (
                   <p className="text-sm text-[#4a5560]">
                     <Link
                       to={loginHref}

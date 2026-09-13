@@ -3,6 +3,7 @@ import express from "express";
 import { createPool, runMigrations } from "./db.mjs";
 import {
   proxyForgotPasswordToAccounts,
+  proxyGoogleToAccounts,
   proxyLoginToAccounts,
   proxyResetPasswordToAccounts,
   proxySignupToAccounts,
@@ -229,6 +230,51 @@ app.post("/api/auth/login", async (req, res) => {
     }
     console.error("Login failed:", error);
     res.status(500).json({ error: "Could not sign in." });
+  }
+});
+
+app.post("/api/auth/google", async (req, res) => {
+  const idToken =
+    typeof req.body?.idToken === "string" ? req.body.idToken.trim() : "";
+  if (!idToken) {
+    res.status(400).json({ error: "Google sign-in did not return a credential." });
+    return;
+  }
+
+  try {
+    const accounts = await proxyGoogleToAccounts(idToken);
+    if (!accounts.ok) {
+      res.status(accounts.status).json({ error: accounts.error });
+      return;
+    }
+
+    const { user: localUser, created } = await ensureLocalQuizUserFromAccounts(
+      pool,
+      accounts.user,
+      { touchLastLogin: true },
+    );
+
+    // Same welcome popup as first-time password linkers: new local row or new Dragotoba user.
+    const needsDisplayName = created || accounts.isNewUser;
+
+    res.json({
+      token: accounts.token,
+      user: localUser,
+      isNewUser: accounts.isNewUser,
+      needsDisplayName,
+    });
+  } catch (error) {
+    if (error?.message === "ACCOUNTS_API_BASE_URL is not set") {
+      console.error("Google auth misconfigured:", error);
+      res.status(503).json({ error: "Accounts Google sign-in is not configured." });
+      return;
+    }
+    if (error?.code === "EMAIL_LINK_CONFLICT") {
+      res.status(409).json({ error: error.message });
+      return;
+    }
+    console.error("Google auth failed:", error);
+    res.status(500).json({ error: "Could not sign in with Google." });
   }
 });
 
