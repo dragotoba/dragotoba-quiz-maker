@@ -83,27 +83,6 @@ export async function loginAccount(input: {
 }) {
   const result = await authRequest("/auth/login", input);
   setSession(result.token, result.user);
-  // #region agent log
-  fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "a58a7b",
-    },
-    body: JSON.stringify({
-      sessionId: "a58a7b",
-      hypothesisId: "D",
-      location: "auth.ts:loginAccount",
-      message: "client stored session after login",
-      data: {
-        tokenLen: result.token?.length ?? 0,
-        userIdPrefix: String(result.user?.id ?? "").slice(0, 8),
-        storedTokenLen: getToken()?.length ?? 0,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
   return result.user;
 }
 
