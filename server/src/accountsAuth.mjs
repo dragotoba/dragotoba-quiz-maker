@@ -17,9 +17,10 @@ export function getAccountsApiBaseUrl() {
 /**
  * @param {string} path
  * @param {Record<string, unknown>} body
+ * @param {{ headers?: Record<string, string> }} [options]
  * @returns {Promise<{ ok: true, status: number, data: Record<string, unknown> } | { ok: false, status: number, error: string }>}
  */
-async function proxyAccountsPost(path, body) {
+async function proxyAccountsPost(path, body, options = {}) {
   const base = getAccountsApiBaseUrl();
   let response;
   try {
@@ -28,6 +29,7 @@ async function proxyAccountsPost(path, body) {
       headers: {
         "Content-Type": "application/json",
         "X-Dragotoba-Service": SERVICE,
+        ...(options.headers ?? {}),
       },
       body: JSON.stringify({ ...body, service: SERVICE }),
     });
@@ -99,6 +101,47 @@ export async function proxyLoginToAccounts(email, password) {
   return {
     ok: true,
     token,
+    user: accountsUser,
+  };
+}
+
+/**
+ * Accounts signup does not return a session token — only `{ ok, user }`.
+ *
+ * @param {{ name: string, email: string, password: string, returnOrigin?: string | null }} input
+ */
+export async function proxySignupToAccounts(input) {
+  const returnOrigin =
+    typeof input.returnOrigin === "string" ? input.returnOrigin.trim().replace(/\/+$/, "") : "";
+  /** @type {Record<string, unknown>} */
+  const body = {
+    name: input.name,
+    email: input.email,
+    password: input.password,
+  };
+  if (returnOrigin) body.returnOrigin = returnOrigin;
+
+  /** @type {Record<string, string>} */
+  const headers = {};
+  if (returnOrigin) headers["X-Return-Origin"] = returnOrigin;
+
+  const result = await proxyAccountsPost("/api/auth/signup", body, { headers });
+  if (!result.ok) {
+    return result;
+  }
+
+  const accountsUser = result.data?.user;
+  if (!accountsUser || typeof accountsUser !== "object" || typeof accountsUser.id !== "string") {
+    return {
+      ok: false,
+      status: 502,
+      error: "Invalid response from Dragotoba accounts.",
+    };
+  }
+
+  return {
+    ok: true,
+    status: result.status,
     user: accountsUser,
   };
 }

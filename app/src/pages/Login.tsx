@@ -7,6 +7,7 @@ export default function Login() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const nextPath = safeNextPath(searchParams.get("next"));
+  const notice = searchParams.get("notice")?.trim() || "";
   const existing = getStoredUser();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -54,8 +55,14 @@ export default function Login() {
             Log in
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-[#4a5560]">
-            Sign in to your Dragotoba account.
+            Sign in with your Dragotoba email (or username if you already have a Quiz Maker profile).
           </p>
+
+          {notice ? (
+            <p className="mt-4 text-sm font-medium text-[#2f5d76]" role="status">
+              {notice}
+            </p>
+          ) : null}
 
           <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
             <label className="block text-sm text-[#1c2a33]">
