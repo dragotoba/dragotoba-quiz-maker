@@ -125,7 +125,7 @@ app.post("/api/auth/signup", async (req, res) => {
       return;
     }
 
-    const localUser = await ensureLocalQuizUserFromAccounts(
+    const { user: localUser } = await ensureLocalQuizUserFromAccounts(
       pool,
       {
         id: accounts.user.id,
@@ -206,13 +206,16 @@ app.post("/api/auth/login", async (req, res) => {
       return;
     }
 
-    const localUser = await ensureLocalQuizUserFromAccounts(pool, accounts.user, {
-      touchLastLogin: true,
-    });
+    const { user: localUser, created } = await ensureLocalQuizUserFromAccounts(
+      pool,
+      accounts.user,
+      { touchLastLogin: true },
+    );
 
     res.json({
       token: accounts.token,
       user: localUser,
+      needsDisplayName: created,
     });
   } catch (error) {
     if (error?.message === "ACCOUNTS_API_BASE_URL is not set") {
@@ -253,6 +256,45 @@ app.get("/api/auth/me", async (req, res) => {
   } catch (error) {
     console.error("Session lookup failed:", error);
     res.status(500).json({ error: "Could not load account." });
+  }
+});
+
+app.patch("/api/auth/me", async (req, res) => {
+  const token = readBearerToken(req);
+  try {
+    const userId = await localUserIdFromToken(pool, token);
+    if (!userId) {
+      res.status(401).json({ error: "Not signed in." });
+      return;
+    }
+
+    const displayName =
+      typeof req.body?.displayName === "string" ? req.body.displayName.trim() : "";
+    if (!displayName) {
+      res.status(400).json({ error: "Enter a display name." });
+      return;
+    }
+    if (displayName.length > 120) {
+      res.status(400).json({ error: "Display name must be at most 120 characters." });
+      return;
+    }
+
+    const result = await pool.query(
+      `UPDATE users
+       SET display_name = $1, updated_at = NOW()
+       WHERE id = $2
+       RETURNING id, username, email, display_name`,
+      [displayName, userId],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      res.status(401).json({ error: "Not signed in." });
+      return;
+    }
+    res.json({ user: publicUser(row) });
+  } catch (error) {
+    console.error("Update profile failed:", error);
+    res.status(500).json({ error: "Could not update display name." });
   }
 });
 

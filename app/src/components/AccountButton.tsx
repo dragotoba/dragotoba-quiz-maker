@@ -1,10 +1,26 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { getStoredUser, logoutAccount } from "@/lib/auth";
+import { getStoredUser, logoutAccount, type AuthUser } from "@/lib/auth";
+
+function labelFor(user: AuthUser) {
+  return user.displayName?.trim() || user.username;
+}
 
 export default function AccountButton({ className = "" }: { className?: string }) {
   const navigate = useNavigate();
   const [user, setUser] = useState(() => getStoredUser());
+
+  useEffect(() => {
+    function sync() {
+      setUser(getStoredUser());
+    }
+    window.addEventListener("storage", sync);
+    window.addEventListener("dragotoba-auth-user", sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("dragotoba-auth-user", sync);
+    };
+  }, []);
 
   if (!user) {
     return (
@@ -20,7 +36,7 @@ export default function AccountButton({ className = "" }: { className?: string }
   return (
     <div className={`flex items-center gap-2 ${className}`}>
       <span className="max-w-[10rem] truncate text-sm font-semibold text-[#1c2a33]">
-        {user.username}
+        {labelFor(user)}
       </span>
       <button
         type="button"
