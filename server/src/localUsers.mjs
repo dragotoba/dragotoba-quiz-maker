@@ -64,6 +64,7 @@ export async function allocateUniqueUsername(pool, base, options = {}) {
  * @param {import("pg").Pool} pool
  * @param {{ id: string, email?: string, name?: string }} accountsUser
  * @param {{ preferredUsername?: string | null, touchLastLogin?: boolean }} [options]
+ * @returns {Promise<{ user: ReturnType<typeof publicUser>, created: boolean }>}
  */
 export async function ensureLocalQuizUserFromAccounts(pool, accountsUser, options = {}) {
   const accountId = accountsUser?.id;
@@ -95,7 +96,7 @@ export async function ensureLocalQuizUserFromAccounts(pool, accountsUser, option
         byAccount.rows[0].id,
       ]);
     }
-    return publicUser(byAccount.rows[0]);
+    return { user: publicUser(byAccount.rows[0]), created: false };
   }
 
   const byEmail = await pool.query(
@@ -123,12 +124,14 @@ export async function ensureLocalQuizUserFromAccounts(pool, accountsUser, option
          RETURNING id, username, email, display_name`,
         [accountId, displayName, options.touchLastLogin !== false, row.id],
       );
-      if (linked.rows[0]) return publicUser(linked.rows[0]);
+      if (linked.rows[0]) {
+        return { user: publicUser(linked.rows[0]), created: false };
+      }
     }
     if (options.touchLastLogin !== false) {
       await pool.query(`UPDATE users SET last_login_at = NOW() WHERE id = $1`, [row.id]);
     }
-    return publicUser(row);
+    return { user: publicUser(row), created: false };
   }
 
   const preferredRaw =
@@ -153,7 +156,7 @@ export async function ensureLocalQuizUserFromAccounts(pool, accountsUser, option
         options.touchLastLogin !== false,
       ],
     );
-    return publicUser(inserted.rows[0]);
+    return { user: publicUser(inserted.rows[0]), created: true };
   } catch (error) {
     if (error?.code !== "23505") throw error;
 
@@ -164,7 +167,9 @@ export async function ensureLocalQuizUserFromAccounts(pool, accountsUser, option
        LIMIT 1`,
       [accountId],
     );
-    if (racedAccount.rows[0]) return publicUser(racedAccount.rows[0]);
+    if (racedAccount.rows[0]) {
+      return { user: publicUser(racedAccount.rows[0]), created: false };
+    }
 
     const racedEmail = await pool.query(
       `SELECT id, username, email, display_name, dragotoba_account_id
@@ -182,9 +187,13 @@ export async function ensureLocalQuizUserFromAccounts(pool, accountsUser, option
          RETURNING id, username, email, display_name`,
         [accountId, options.touchLastLogin !== false, racedEmail.rows[0].id],
       );
-      if (linked.rows[0]) return publicUser(linked.rows[0]);
+      if (linked.rows[0]) {
+        return { user: publicUser(linked.rows[0]), created: false };
+      }
     }
-    if (racedEmail.rows[0]) return publicUser(racedEmail.rows[0]);
+    if (racedEmail.rows[0]) {
+      return { user: publicUser(racedEmail.rows[0]), created: false };
+    }
     throw error;
   }
 }

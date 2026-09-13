@@ -8,10 +8,12 @@ export type AuthUser = {
 type AuthResponse = {
   token: string;
   user: AuthUser;
+  needsDisplayName?: boolean;
 };
 
 const TOKEN_KEY = "dragotoba.auth.token";
 const USER_KEY = "dragotoba.auth.user";
+const NEEDS_DISPLAY_NAME_KEY = "dragotoba.auth.needsDisplayName";
 
 export function getToken() {
   try {
@@ -33,14 +35,46 @@ export function getStoredUser(): AuthUser | null {
   }
 }
 
-export function setSession(token: string, user: AuthUser) {
+export function setSession(token: string, user: AuthUser, options?: { needsDisplayName?: boolean }) {
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
+  if (options?.needsDisplayName) {
+    try {
+      sessionStorage.setItem(NEEDS_DISPLAY_NAME_KEY, "1");
+    } catch {
+      // Ignore private-mode failures.
+    }
+  }
 }
 
 export function clearSession() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+  try {
+    sessionStorage.removeItem(NEEDS_DISPLAY_NAME_KEY);
+  } catch {
+    // Ignore.
+  }
+}
+
+export function peekNeedsDisplayNamePrompt(): boolean {
+  try {
+    return sessionStorage.getItem(NEEDS_DISPLAY_NAME_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function clearNeedsDisplayNamePrompt() {
+  try {
+    sessionStorage.removeItem(NEEDS_DISPLAY_NAME_KEY);
+  } catch {
+    // Ignore.
+  }
+}
+
+export function updateStoredUser(user: AuthUser) {
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
 export function authHeaders(): HeadersInit {
@@ -115,8 +149,33 @@ export async function loginAccount(input: {
   password: string;
 }) {
   const result = await authRequest("/auth/login", input);
-  setSession(result.token, result.user);
+  setSession(result.token, result.user, {
+    needsDisplayName: Boolean(result.needsDisplayName),
+  });
   return result.user;
+}
+
+export async function updateDisplayName(displayName: string): Promise<AuthUser> {
+  const res = await fetch("/api/auth/me", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
+    body: JSON.stringify({ displayName }),
+  });
+  const raw = await res.text();
+  let data: { user?: AuthUser; error?: string } | null = null;
+  try {
+    data = raw ? (JSON.parse(raw) as { user?: AuthUser; error?: string }) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok || !data?.user) {
+    throw new Error(data?.error || "Could not update display name.");
+  }
+  updateStoredUser(data.user);
+  return data.user;
 }
 
 const FORGOT_PASSWORD_MESSAGE =
