@@ -8,6 +8,7 @@
     "start": "npm run start --prefix app",
     "dev:server": "npm run dev --prefix server",
     "start:server": "npm run start --prefix server",
-    "migrate": "npm run migrate --prefix server"
+    "migrate": "npm run migrate --prefix server",
+    "sync:dragotoba-ids": "npm run sync:dragotoba-ids --prefix server"
   }
 }

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --watch src/index.mjs",
     "start": "node src/index.mjs",
-    "migrate": "node src/migrate.mjs"
+    "migrate": "node src/migrate.mjs",
+    "sync:dragotoba-ids": "node src/sync-dragotoba-ids.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
