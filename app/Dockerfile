@@ -2,6 +2,11 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 
+# Vite inlines VITE_* at build time — must be present during `npm run build`.
+# Railway (and Docker) pass service vars into the build when declared as ARG.
+ARG VITE_GOOGLE_CLIENT_ID
+ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
+
 COPY package.json package-lock.json* ./
 RUN npm install
 
