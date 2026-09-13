@@ -358,31 +358,6 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     Object.assign(headers, extra);
   }
 
-  // #region agent log
-  const token = getToken();
-  fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "a58a7b",
-    },
-    body: JSON.stringify({
-      sessionId: "a58a7b",
-      hypothesisId: "E",
-      location: "quizStorage.ts:apiJson:before",
-      message: "api request about to send",
-      data: {
-        path,
-        method: init.method || "GET",
-        hasToken: Boolean(token),
-        tokenLen: token ? token.length : 0,
-        hasAuthHeader: Boolean(headers.Authorization),
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-
   const res = await fetch(`/api${path}`, { cache: "no-store", ...init, headers });
   if (res.status === 204) return undefined as T;
 
@@ -394,32 +369,6 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     data = null;
   }
   if (!res.ok) {
-    // #region agent log
-    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "a58a7b",
-      },
-      body: JSON.stringify({
-        sessionId: "a58a7b",
-        hypothesisId: "E",
-        location: "quizStorage.ts:apiJson:error",
-        message: "api request failed",
-        data: {
-          path,
-          status: res.status,
-          error:
-            data && typeof data === "object" && "error" in data && data.error
-              ? String(data.error)
-              : null,
-          hasToken: Boolean(token),
-          tokenLen: token ? token.length : 0,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     throw new Error(
       data && typeof data === "object" && "error" in data && data.error
         ? String(data.error)

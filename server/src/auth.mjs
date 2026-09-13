@@ -54,47 +54,7 @@ export function dragotobaAccountIdFromToken(token) {
   try {
     const payload = jwt.verify(token, getAccountsJwtSecret());
     return typeof payload?.sub === "string" ? payload.sub : null;
-  } catch (error) {
-    // #region agent log
-    const decoded = (() => {
-      try {
-        return jwt.decode(token);
-      } catch {
-        return null;
-      }
-    })();
-    const secretLen = (process.env.ACCOUNTS_JWT_SECRET || "").trim().length;
-    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "a58a7b",
-      },
-      body: JSON.stringify({
-        sessionId: "a58a7b",
-        hypothesisId: "B",
-        location: "auth.mjs:dragotobaAccountIdFromToken",
-        message: "jwt.verify failed",
-        data: {
-          errName: error?.name,
-          errMessage: error?.message,
-          tokenLen: typeof token === "string" ? token.length : 0,
-          secretConfigured: secretLen > 0,
-          secretLen,
-          decodedSubType: typeof decoded?.sub,
-          decodedHasSid: Boolean(decoded && typeof decoded === "object" && "sid" in decoded),
-          decodedHasSvc: Boolean(decoded && typeof decoded === "object" && "svc" in decoded),
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    console.error("[dbg-a58a7b] jwt.verify failed", {
-      errName: error?.name,
-      errMessage: error?.message,
-      tokenLen: typeof token === "string" ? token.length : 0,
-      secretLen,
-    });
-    // #endregion
+  } catch {
     return null;
   }
 }
@@ -106,81 +66,15 @@ export function dragotobaAccountIdFromToken(token) {
  * @returns {Promise<string | null>}
  */
 export async function localUserIdFromToken(pool, token) {
-  if (!token) {
-    // #region agent log
-    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "a58a7b",
-      },
-      body: JSON.stringify({
-        sessionId: "a58a7b",
-        hypothesisId: "A",
-        location: "auth.mjs:localUserIdFromToken",
-        message: "no token",
-        data: {},
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    console.error("[dbg-a58a7b] localUserIdFromToken: no token");
-    // #endregion
-    return null;
-  }
+  if (!token) return null;
   const dragotobaAccountId = dragotobaAccountIdFromToken(token);
-  if (!dragotobaAccountId) {
-    // #region agent log
-    fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "a58a7b",
-      },
-      body: JSON.stringify({
-        sessionId: "a58a7b",
-        hypothesisId: "B",
-        location: "auth.mjs:localUserIdFromToken",
-        message: "verify returned null sub",
-        data: { tokenLen: token.length },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
-    return null;
-  }
+  if (!dragotobaAccountId) return null;
 
   const result = await pool.query(
     `SELECT id FROM users WHERE dragotoba_account_id = $1 LIMIT 1`,
     [dragotobaAccountId],
   );
-  const localId = result.rows[0]?.id ?? null;
-  // #region agent log
-  fetch("http://127.0.0.1:7396/ingest/25b36585-94ec-47e1-8552-d4a8a44c933d", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "a58a7b",
-    },
-    body: JSON.stringify({
-      sessionId: "a58a7b",
-      hypothesisId: localId ? "OK" : "C",
-      location: "auth.mjs:localUserIdFromToken",
-      message: localId ? "resolved local user" : "no local user for dragotoba_account_id",
-      data: {
-        hasLocalId: Boolean(localId),
-        accountIdLen: dragotobaAccountId.length,
-        accountIdPrefix: dragotobaAccountId.slice(0, 8),
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  if (!localId) {
-    console.error("[dbg-a58a7b] no local user for dragotoba_account_id", {
-      accountIdPrefix: dragotobaAccountId.slice(0, 8),
-    });
-  }
-  // #endregion
-  return localId;
+  return result.rows[0]?.id ?? null;
 }
 
 export function normalizeEmail(value) {
