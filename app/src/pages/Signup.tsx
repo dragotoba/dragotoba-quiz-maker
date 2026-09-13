@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
-import GoogleSignIn, { isGoogleAuthConfigured } from "@/components/GoogleSignIn";
+import GoogleSignIn from "@/components/GoogleSignIn";
 import {
   getStoredUser,
   loginWithGoogle,
@@ -21,7 +21,6 @@ export default function Signup() {
   const [error, setError] = useState("");
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const googleEnabled = isGoogleAuthConfigured();
 
   if (existing) {
     return <Navigate to={nextPath} replace />;
@@ -86,11 +85,7 @@ export default function Signup() {
         err instanceof Error ? err.message : "Could not sign in with Google.";
       setErrorCode(code || null);
       setError(message);
-      // Surface conflict copy with login / forgot links when accounts returns 409.
-      if (
-        !code &&
-        /already|exists|linked|conflict/i.test(message)
-      ) {
+      if (!code && /already|exists|linked|conflict/i.test(message)) {
         setErrorCode("DRAGOTOBA_ACCOUNT_EXISTS");
       }
       throw err;
@@ -117,28 +112,26 @@ export default function Signup() {
             Create account
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-[#4a5560]">
-            Sign up with Google, or with a username, email, and password.
+            Continue with Google, or sign up with a username, email, and password.
           </p>
 
-          {googleEnabled ? (
-            <div className="mt-6 space-y-4">
-              <GoogleSignIn
-                disabled={busy}
-                onCredential={handleGoogle}
-                onError={(message) => {
-                  setErrorCode(null);
-                  setError(message);
-                }}
-              />
-              <div className="flex items-center gap-3 text-xs font-medium uppercase tracking-[0.08em] text-[#8a939c]">
-                <span className="h-px flex-1 bg-[#1c2a33]/12" />
-                or
-                <span className="h-px flex-1 bg-[#1c2a33]/12" />
-              </div>
+          <div className="mt-6 space-y-4">
+            <GoogleSignIn
+              disabled={busy}
+              onCredential={handleGoogle}
+              onError={(message) => {
+                setErrorCode(null);
+                setError(message);
+              }}
+            />
+            <div className="flex items-center gap-3 text-xs font-medium uppercase tracking-[0.08em] text-[#8a939c]">
+              <span className="h-px flex-1 bg-[#1c2a33]/12" />
+              or
+              <span className="h-px flex-1 bg-[#1c2a33]/12" />
             </div>
-          ) : null}
+          </div>
 
-          <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
+          <form className="mt-4 space-y-4" onSubmit={handleSubmit}>
             <label className="block text-sm text-[#1c2a33]">
               <span className="font-medium text-[#4a5560]">Username</span>
               <input
