@@ -13,15 +13,20 @@ export default function Signup() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   if (existing) {
     return <Navigate to={nextPath} replace />;
   }
 
+  const loginHref =
+    nextPath === "/dashboard" ? "/login" : `/login?next=${encodeURIComponent(nextPath)}`;
+
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
+    setErrorCode(null);
     if (password !== confirmPassword) {
       setError("Passwords do not match.");
       return;
@@ -36,6 +41,18 @@ export default function Signup() {
       }
       navigate(nextPath, { replace: true });
     } catch (err) {
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? String((err as { code?: string }).code ?? "")
+          : "";
+      if (code === "NEEDS_LOGIN") {
+        navigate(
+          `${loginHref}${loginHref.includes("?") ? "&" : "?"}notice=${encodeURIComponent("Account created — sign in.")}`,
+          { replace: true },
+        );
+        return;
+      }
+      setErrorCode(code || null);
       setError(err instanceof Error ? err.message : "Could not create account.");
     } finally {
       setBusy(false);
@@ -125,9 +142,26 @@ export default function Signup() {
             </label>
 
             {error ? (
-              <p className="text-sm font-medium text-[#7a3b3b]" role="alert">
-                {error}
-              </p>
+              <div className="space-y-2" role="alert">
+                <p className="text-sm font-medium text-[#7a3b3b]">{error}</p>
+                {errorCode === "DRAGOTOBA_ACCOUNT_EXISTS" ? (
+                  <p className="text-sm text-[#4a5560]">
+                    <Link
+                      to={loginHref}
+                      className="font-semibold text-[#2f5d76] no-underline hover:text-[#244a5e]"
+                    >
+                      Log in
+                    </Link>
+                    {" · "}
+                    <Link
+                      to="/forgot-password"
+                      className="font-semibold text-[#2f5d76] no-underline hover:text-[#244a5e]"
+                    >
+                      Forgot password?
+                    </Link>
+                  </p>
+                ) : null}
+              </div>
             ) : null}
 
             <button
@@ -142,11 +176,7 @@ export default function Signup() {
           <p className="mt-6 text-center text-sm text-[#5c6770]">
             Already have an account?{" "}
             <Link
-              to={
-                nextPath === "/dashboard"
-                  ? "/login"
-                  : `/login?next=${encodeURIComponent(nextPath)}`
-              }
+              to={loginHref}
               className="font-semibold text-[#2f5d76] no-underline hover:text-[#244a5e]"
             >
               Log in

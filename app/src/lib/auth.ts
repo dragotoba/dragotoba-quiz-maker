@@ -55,13 +55,43 @@ async function authRequest(path: string, body: unknown): Promise<AuthResponse> {
     body: JSON.stringify(body),
   });
   const raw = await res.text();
-  let data: (AuthResponse & { error?: string }) | null = null;
+  let data: (AuthResponse & {
+    error?: string;
+    code?: string;
+    needsLogin?: boolean;
+    message?: string;
+  }) | null = null;
   try {
-    data = raw ? (JSON.parse(raw) as AuthResponse & { error?: string }) : null;
+    data = raw
+      ? (JSON.parse(raw) as AuthResponse & {
+          error?: string;
+          code?: string;
+          needsLogin?: boolean;
+          message?: string;
+        })
+      : null;
   } catch {
     data = null;
   }
-  if (!res.ok || !data?.token || !data.user) {
+  if (!res.ok) {
+    const err = new Error(data?.error || "Request failed.") as Error & {
+      code?: string;
+      status?: number;
+    };
+    if (data?.code) err.code = data.code;
+    err.status = res.status;
+    throw err;
+  }
+  if (data?.needsLogin && data.user && !data.token) {
+    const err = new Error(data.message || "Account created — sign in.") as Error & {
+      code?: string;
+      status?: number;
+    };
+    err.code = "NEEDS_LOGIN";
+    err.status = res.status;
+    throw err;
+  }
+  if (!data?.token || !data.user) {
     throw new Error(data?.error || "Request failed.");
   }
   return data;
@@ -72,7 +102,10 @@ export async function signupAccount(input: {
   email: string;
   password: string;
 }) {
-  const result = await authRequest("/auth/signup", input);
+  const result = await authRequest("/auth/signup", {
+    ...input,
+    returnOrigin: window.location.origin,
+  });
   setSession(result.token, result.user);
   return result.user;
 }
