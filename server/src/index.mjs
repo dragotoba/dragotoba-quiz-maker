@@ -1,17 +1,19 @@
 import cors from "cors";
 import express from "express";
 import { createPool, runMigrations } from "./db.mjs";
+import { proxyLoginToAccounts } from "./accountsAuth.mjs";
 import {
   hashPassword,
-  passwordMatches,
+  normalizeEmail,
   publicUser,
   readBearerToken,
   signToken,
   uniqueFieldFromError,
-  userIdFromToken,
+  localUserIdFromToken,
   validateLogin,
   validateSignup,
   getJwtSecret,
+  getAccountsJwtSecret,
 } from "./auth.mjs";
 import { registerQuizRoutes } from "./quizzes.mjs";
 
@@ -19,8 +21,9 @@ const PORT = Number(process.env.PORT) || 3001;
 
 try {
   getJwtSecret();
+  getAccountsJwtSecret();
 } catch (error) {
-  console.error("JWT_SECRET is required in production:", error);
+  console.error("JWT secrets required in production:", error);
   process.exit(1);
 }
 
@@ -105,28 +108,60 @@ app.post("/api/auth/login", async (req, res) => {
   }
 
   try {
-    const result = await pool.query(
-      `SELECT id, username, email, display_name, password_hash
+    let email;
+    if (parsed.identifier.includes("@")) {
+      email = normalizeEmail(parsed.identifier);
+    } else {
+      const local = await pool.query(
+        `SELECT email, dragotoba_account_id
+         FROM users
+         WHERE LOWER(username) = LOWER($1)
+         LIMIT 1`,
+        [parsed.identifier],
+      );
+      const row = local.rows[0];
+      if (!row?.email || !row.dragotoba_account_id) {
+        res.status(401).json({ error: "Incorrect email/username or password." });
+        return;
+      }
+      email = normalizeEmail(row.email);
+    }
+
+    const accounts = await proxyLoginToAccounts(email, parsed.password);
+    if (!accounts.ok) {
+      res.status(accounts.status).json({ error: accounts.error });
+      return;
+    }
+
+    const linked = await pool.query(
+      `SELECT id, username, email, display_name
        FROM users
-       WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($1)
+       WHERE dragotoba_account_id = $1
        LIMIT 1`,
-      [parsed.identifier],
+      [accounts.user.id],
     );
-    const row = result.rows[0];
-    if (!row || !(await passwordMatches(parsed.password, row.password_hash))) {
-      res.status(401).json({ error: "Incorrect email/username or password." });
+    const localUser = linked.rows[0];
+    if (!localUser) {
+      res.status(403).json({
+        error: "Account not linked to Quiz Maker.",
+      });
       return;
     }
 
     await pool.query("UPDATE users SET last_login_at = NOW() WHERE id = $1", [
-      row.id,
+      localUser.id,
     ]);
 
     res.json({
-      token: signToken(row.id),
-      user: publicUser(row),
+      token: accounts.token,
+      user: publicUser(localUser),
     });
   } catch (error) {
+    if (error?.message === "ACCOUNTS_API_BASE_URL is not set") {
+      console.error("Login misconfigured:", error);
+      res.status(503).json({ error: "Accounts login is not configured." });
+      return;
+    }
     console.error("Login failed:", error);
     res.status(500).json({ error: "Could not sign in." });
   }
@@ -134,13 +169,13 @@ app.post("/api/auth/login", async (req, res) => {
 
 app.get("/api/auth/me", async (req, res) => {
   const token = readBearerToken(req);
-  const userId = token ? userIdFromToken(token) : null;
-  if (!userId) {
-    res.status(401).json({ error: "Not signed in." });
-    return;
-  }
-
   try {
+    const userId = await localUserIdFromToken(pool, token);
+    if (!userId) {
+      res.status(401).json({ error: "Not signed in." });
+      return;
+    }
+
     const result = await pool.query(
       `SELECT id, username, email, display_name
        FROM users
@@ -159,15 +194,20 @@ app.get("/api/auth/me", async (req, res) => {
   }
 });
 
-function requireUser(req, res, next) {
+async function requireUser(req, res, next) {
   const token = readBearerToken(req);
-  const userId = token ? userIdFromToken(token) : null;
-  if (!userId) {
-    res.status(401).json({ error: "Not signed in." });
-    return;
+  try {
+    const userId = await localUserIdFromToken(pool, token);
+    if (!userId) {
+      res.status(401).json({ error: "Not signed in." });
+      return;
+    }
+    req.userId = userId;
+    next();
+  } catch (error) {
+    console.error("Auth middleware failed:", error);
+    res.status(500).json({ error: "Could not verify session." });
   }
-  req.userId = userId;
-  next();
 }
 
 registerQuizRoutes(app, pool, requireUser);
