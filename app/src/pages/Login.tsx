@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
-import GoogleSignIn, { isGoogleAuthConfigured } from "@/components/GoogleSignIn";
+import GoogleSignIn from "@/components/GoogleSignIn";
 import { getStoredUser, loginAccount, loginWithGoogle, safeNextPath } from "@/lib/auth";
 import { migrateLocalQuizzesIfNeeded } from "@/lib/quizStorage";
 
@@ -14,7 +14,6 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const googleEnabled = isGoogleAuthConfigured();
 
   if (existing) {
     return <Navigate to={nextPath} replace />;
@@ -75,7 +74,7 @@ export default function Login() {
             Log in
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-[#4a5560]">
-            Sign in with your Dragotoba email (or username if you already have a Quiz Maker profile).
+            Sign in with Google, or with your email / username and password.
           </p>
 
           {notice ? (
@@ -84,22 +83,20 @@ export default function Login() {
             </p>
           ) : null}
 
-          {googleEnabled ? (
-            <div className="mt-6 space-y-4">
-              <GoogleSignIn
-                disabled={busy}
-                onCredential={handleGoogle}
-                onError={(message) => setError(message)}
-              />
-              <div className="flex items-center gap-3 text-xs font-medium uppercase tracking-[0.08em] text-[#8a939c]">
-                <span className="h-px flex-1 bg-[#1c2a33]/12" />
-                or
-                <span className="h-px flex-1 bg-[#1c2a33]/12" />
-              </div>
+          <div className="mt-6 space-y-4">
+            <GoogleSignIn
+              disabled={busy}
+              onCredential={handleGoogle}
+              onError={(message) => setError(message)}
+            />
+            <div className="flex items-center gap-3 text-xs font-medium uppercase tracking-[0.08em] text-[#8a939c]">
+              <span className="h-px flex-1 bg-[#1c2a33]/12" />
+              or
+              <span className="h-px flex-1 bg-[#1c2a33]/12" />
             </div>
-          ) : null}
+          </div>
 
-          <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
+          <form className="mt-4 space-y-4" onSubmit={handleSubmit}>
             <label className="block text-sm text-[#1c2a33]">
               <span className="font-medium text-[#4a5560]">Email or username</span>
               <input
