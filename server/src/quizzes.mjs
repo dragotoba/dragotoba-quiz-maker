@@ -1,4 +1,4 @@
-import { readBearerToken, userIdFromToken } from "./auth.mjs";
+import { localUserIdFromToken, readBearerToken } from "./auth.mjs";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -121,9 +121,8 @@ function rowToCommunity(row) {
   };
 }
 
-function requestUserId(req) {
-  const token = readBearerToken(req);
-  return token ? userIdFromToken(token) : null;
+async function requestUserId(pool, req) {
+  return localUserIdFromToken(pool, readBearerToken(req));
 }
 
 const COMMUNITY_SORTS = new Set(["trending", "liked", "recent"]);
@@ -398,7 +397,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
 
   app.get("/api/community/quizzes", async (req, res) => {
     const sort = COMMUNITY_SORTS.has(req.query?.sort) ? req.query.sort : "trending";
-    const userId = requestUserId(req);
+    const userId = await requestUserId(pool, req);
     try {
       const result = await pool.query(
         `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, u.username,
@@ -449,7 +448,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
       res.status(400).json({ error: "Invalid quiz id." });
       return;
     }
-    const userId = requestUserId(req);
+    const userId = await requestUserId(pool, req);
     try {
       const result = await pool.query(
         `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, u.username,

@@ -5,6 +5,7 @@ const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TOKEN_TTL = "30d";
 
+/** Legacy Quiz Maker JWT (signup still uses this until signup cutover). */
 export function getJwtSecret() {
   const secret = process.env.JWT_SECRET?.trim();
   if (secret) return secret;
@@ -12,6 +13,19 @@ export function getJwtSecret() {
     throw new Error("JWT_SECRET is not set");
   }
   return "dev-only-jwt-secret";
+}
+
+/**
+ * Secret shared with Dragotoba accounts (accounts JWT_SECRET).
+ * Used to verify tokens returned by accounts login.
+ */
+export function getAccountsJwtSecret() {
+  const secret = process.env.ACCOUNTS_JWT_SECRET?.trim();
+  if (secret) return secret;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("ACCOUNTS_JWT_SECRET is not set");
+  }
+  return "dev-only-accounts-jwt-secret";
 }
 
 export function publicUser(row) {
@@ -35,13 +49,32 @@ export function readBearerToken(req) {
   return token;
 }
 
-export function userIdFromToken(token) {
+/** Verify Dragotoba accounts JWT; returns accounts.id (sub) or null. */
+export function dragotobaAccountIdFromToken(token) {
   try {
-    const payload = jwt.verify(token, getJwtSecret());
+    const payload = jwt.verify(token, getAccountsJwtSecret());
     return typeof payload?.sub === "string" ? payload.sub : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve Bearer token → local Quiz Maker users.id via dragotoba_account_id.
+ * @param {import("pg").Pool} pool
+ * @param {string | null | undefined} token
+ * @returns {Promise<string | null>}
+ */
+export async function localUserIdFromToken(pool, token) {
+  if (!token) return null;
+  const dragotobaAccountId = dragotobaAccountIdFromToken(token);
+  if (!dragotobaAccountId) return null;
+
+  const result = await pool.query(
+    `SELECT id FROM users WHERE dragotoba_account_id = $1 LIMIT 1`,
+    [dragotobaAccountId],
+  );
+  return result.rows[0]?.id ?? null;
 }
 
 export function normalizeEmail(value) {
