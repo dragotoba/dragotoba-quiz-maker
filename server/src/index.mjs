@@ -1,7 +1,7 @@
 import cors from "cors";
 import express from "express";
 import { createPool, runMigrations } from "./db.mjs";
-import { proxyLoginToAccounts } from "./accountsAuth.mjs";
+import { proxyForgotPasswordToAccounts, proxyLoginToAccounts, proxyResetPasswordToAccounts } from "./accountsAuth.mjs";
 import {
   hashPassword,
   normalizeEmail,
@@ -191,6 +191,77 @@ app.get("/api/auth/me", async (req, res) => {
   } catch (error) {
     console.error("Session lookup failed:", error);
     res.status(500).json({ error: "Could not load account." });
+  }
+});
+
+app.post("/api/auth/forgot-password", async (req, res) => {
+  const email = normalizeEmail(req.body?.email);
+  if (!email || !email.includes("@")) {
+    res.status(400).json({ error: "Enter a valid email address." });
+    return;
+  }
+
+  try {
+    const returnOrigin =
+      typeof req.body?.returnOrigin === "string"
+        ? req.body.returnOrigin
+        : process.env.WEBSITE_URL?.trim() || null;
+    const result = await proxyForgotPasswordToAccounts(email, returnOrigin);
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    const message =
+      typeof result.data?.message === "string"
+        ? result.data.message
+        : "If an account exists for that email, we sent a password reset link.";
+    res.json({ ok: true, message });
+  } catch (error) {
+    if (error?.message === "ACCOUNTS_API_BASE_URL is not set") {
+      console.error("Forgot password misconfigured:", error);
+      res.status(503).json({ error: "Accounts password reset is not configured." });
+      return;
+    }
+    console.error("Forgot password failed:", error);
+    res.status(500).json({ error: "Could not send reset email." });
+  }
+});
+
+app.post("/api/auth/reset-password", async (req, res) => {
+  const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  if (!token) {
+    res.status(400).json({ error: "This link is invalid or expired." });
+    return;
+  }
+  if (password.length < 8) {
+    res.status(400).json({ error: "Password must be at least 8 characters." });
+    return;
+  }
+  if (password.length > 128) {
+    res.status(400).json({ error: "Password is too long." });
+    return;
+  }
+
+  try {
+    const result = await proxyResetPasswordToAccounts(token, password);
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    const message =
+      typeof result.data?.message === "string"
+        ? result.data.message
+        : "Password updated.";
+    res.json({ ok: true, message });
+  } catch (error) {
+    if (error?.message === "ACCOUNTS_API_BASE_URL is not set") {
+      console.error("Reset password misconfigured:", error);
+      res.status(503).json({ error: "Accounts password reset is not configured." });
+      return;
+    }
+    console.error("Reset password failed:", error);
+    res.status(500).json({ error: "Could not reset password." });
   }
 });
 

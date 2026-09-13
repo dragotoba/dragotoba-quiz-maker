@@ -15,28 +15,24 @@ export function getAccountsApiBaseUrl() {
 }
 
 /**
- * @param {string} email
- * @param {string} password
- * @returns {Promise<{ ok: true, token: string, user: { id: string, email?: string, name?: string } } | { ok: false, status: number, error: string }>}
+ * @param {string} path
+ * @param {Record<string, unknown>} body
+ * @returns {Promise<{ ok: true, status: number, data: Record<string, unknown> } | { ok: false, status: number, error: string }>}
  */
-export async function proxyLoginToAccounts(email, password) {
+async function proxyAccountsPost(path, body) {
   const base = getAccountsApiBaseUrl();
   let response;
   try {
-    response = await fetch(`${base}/api/auth/login`, {
+    response = await fetch(`${base}${path}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Dragotoba-Service": SERVICE,
       },
-      body: JSON.stringify({
-        email,
-        password,
-        service: SERVICE,
-      }),
+      body: JSON.stringify({ ...body, service: SERVICE }),
     });
   } catch (error) {
-    console.error("Accounts login request failed:", error);
+    console.error(`Accounts request failed (${path}):`, error);
     return {
       ok: false,
       status: 502,
@@ -56,13 +52,43 @@ export async function proxyLoginToAccounts(email, password) {
     const error =
       data && typeof data === "object" && typeof data.error === "string"
         ? data.error
-        : "Incorrect email/username or password.";
+        : "Request failed.";
     return { ok: false, status: response.status, error };
   }
 
-  const token = data?.token;
-  const accountsUser = data?.user;
-  if (typeof token !== "string" || !accountsUser || typeof accountsUser.id !== "string") {
+  return {
+    ok: true,
+    status: response.status,
+    data: data && typeof data === "object" ? data : {},
+  };
+}
+
+/**
+ * @param {string} email
+ * @param {string} password
+ * @returns {Promise<{ ok: true, token: string, user: { id: string, email?: string, name?: string } } | { ok: false, status: number, error: string }>}
+ */
+export async function proxyLoginToAccounts(email, password) {
+  const result = await proxyAccountsPost("/api/auth/login", { email, password });
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status,
+      error:
+        result.error === "Request failed."
+          ? "Incorrect email/username or password."
+          : result.error,
+    };
+  }
+
+  const token = result.data?.token;
+  const accountsUser = result.data?.user;
+  if (
+    typeof token !== "string" ||
+    !accountsUser ||
+    typeof accountsUser !== "object" ||
+    typeof accountsUser.id !== "string"
+  ) {
     return {
       ok: false,
       status: 502,
@@ -75,4 +101,25 @@ export async function proxyLoginToAccounts(email, password) {
     token,
     user: accountsUser,
   };
+}
+
+/**
+ * @param {string} email
+ * @param {string | null | undefined} returnOrigin
+ */
+export async function proxyForgotPasswordToAccounts(email, returnOrigin) {
+  /** @type {Record<string, unknown>} */
+  const body = { email };
+  if (typeof returnOrigin === "string" && returnOrigin.trim()) {
+    body.returnOrigin = returnOrigin.trim().replace(/\/+$/, "");
+  }
+  return proxyAccountsPost("/api/auth/forgot-password", body);
+}
+
+/**
+ * @param {string} token
+ * @param {string} password
+ */
+export async function proxyResetPasswordToAccounts(token, password) {
+  return proxyAccountsPost("/api/auth/reset-password", { token, password });
 }
