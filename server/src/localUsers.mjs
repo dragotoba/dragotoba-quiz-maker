@@ -1,8 +1,4 @@
-import bcrypt from "bcryptjs";
 import { normalizeEmail, publicUser } from "./auth.mjs";
-
-/** Local column kept for NOT NULL; never used for auth after accounts cutover. */
-export const UNUSED_PASSWORD_HASH = bcrypt.hashSync("__dragotoba_accounts_auth__", 12);
 
 const USERNAME_SAFE_RE = /^[a-zA-Z0-9_]{3,32}$/;
 
@@ -145,14 +141,13 @@ export async function ensureLocalQuizUserFromAccounts(pool, accountsUser, option
   try {
     const inserted = await pool.query(
       `INSERT INTO users (
-         username, email, password_hash, display_name, dragotoba_account_id, email_verified_at, last_login_at
+         username, email, display_name, dragotoba_account_id, email_verified_at, last_login_at
        )
-       VALUES ($1, $2, $3, $4, $5, NULL, CASE WHEN $6 THEN NOW() ELSE NULL END)
+       VALUES ($1, $2, $3, $4, NULL, CASE WHEN $5 THEN NOW() ELSE NULL END)
        RETURNING id, username, email, display_name`,
       [
         username,
         email,
-        UNUSED_PASSWORD_HASH,
         displayName,
         accountId,
         options.touchLastLogin !== false,

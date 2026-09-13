@@ -12,7 +12,7 @@
  *   ACCOUNTS_DATABASE_SSL=false / PGSSLMODE=disable — local SSL off
  *   QUIZ_DATABASE_SSL=false   — optional; defaults to same SSL rules as db.mjs
  *
- * Does not delete users, null password_hash, or change accounts.
+ * Does not delete users or change accounts.
  */
 import pg from "pg";
 import { createPool, runMigrations } from "./db.mjs";

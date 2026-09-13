@@ -1,11 +1,10 @@
-import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TOKEN_TTL = "30d";
 
-/** Legacy Quiz Maker JWT (signup still uses this until signup cutover). */
+/** Legacy Quiz Maker JWT helper (unused for password login after accounts cutover). */
 export function getJwtSecret() {
   const secret = process.env.JWT_SECRET?.trim();
   if (secret) return secret;
@@ -125,14 +124,6 @@ export function validateLogin({ identifier, password }) {
     identifier: nextIdentifier,
     password: nextPassword,
   };
-}
-
-export async function hashPassword(password) {
-  return bcrypt.hash(password, 12);
-}
-
-export async function passwordMatches(password, passwordHash) {
-  return bcrypt.compare(password, passwordHash);
 }
 
 export function uniqueFieldFromError(error) {
