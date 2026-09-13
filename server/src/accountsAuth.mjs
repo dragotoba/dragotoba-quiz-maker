@@ -147,6 +147,46 @@ export async function proxySignupToAccounts(input) {
 }
 
 /**
+ * @param {string} idToken
+ * @returns {Promise<{ ok: true, token: string, user: { id: string, email?: string, name?: string }, isNewUser: boolean } | { ok: false, status: number, error: string }>}
+ */
+export async function proxyGoogleToAccounts(idToken) {
+  const result = await proxyAccountsPost("/api/auth/google", { idToken });
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status,
+      error:
+        result.error === "Request failed."
+          ? "Google sign-in failed."
+          : result.error,
+    };
+  }
+
+  const token = result.data?.token;
+  const accountsUser = result.data?.user;
+  if (
+    typeof token !== "string" ||
+    !accountsUser ||
+    typeof accountsUser !== "object" ||
+    typeof accountsUser.id !== "string"
+  ) {
+    return {
+      ok: false,
+      status: 502,
+      error: "Invalid response from Dragotoba accounts.",
+    };
+  }
+
+  return {
+    ok: true,
+    token,
+    user: accountsUser,
+    isNewUser: Boolean(result.data?.isNewUser),
+  };
+}
+
+/**
  * @param {string} email
  * @param {string | null | undefined} returnOrigin
  */
