@@ -4,6 +4,8 @@ import Dashboard from "./pages/Dashboard";
 import Community from "./pages/Community";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 import CreateQuiz from "./pages/CreateQuiz";
 import NotFound from "./pages/NotFound";
 
@@ -16,6 +18,8 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/quiz/:quizId" element={<CreateQuiz />} />
         <Route path="/create" element={<Navigate to="/dashboard" replace />} />
         <Route path="*" element={<NotFound />} />
@@ -23,3 +27,4 @@ export default function App() {
     </BrowserRouter>
   );
 }
+

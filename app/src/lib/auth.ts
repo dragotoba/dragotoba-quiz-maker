@@ -86,6 +86,51 @@ export async function loginAccount(input: {
   return result.user;
 }
 
+const FORGOT_PASSWORD_MESSAGE =
+  "If an account exists for that email, we sent a password reset link.";
+
+export async function forgotPassword(email: string) {
+  const res = await fetch("/api/auth/forgot-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email,
+      returnOrigin: window.location.origin,
+    }),
+  });
+  const raw = await res.text();
+  let data: { ok?: boolean; message?: string; error?: string } | null = null;
+  try {
+    data = raw ? (JSON.parse(raw) as { ok?: boolean; message?: string; error?: string }) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    throw new Error(data?.error || "Could not send reset email.");
+  }
+  return data?.message || FORGOT_PASSWORD_MESSAGE;
+}
+
+export async function resetPassword(input: { token: string; password: string }) {
+  const res = await fetch("/api/auth/reset-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const raw = await res.text();
+  let data: { ok?: boolean; message?: string; error?: string } | null = null;
+  try {
+    data = raw ? (JSON.parse(raw) as { ok?: boolean; message?: string; error?: string }) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    throw new Error(data?.error || "Could not reset password.");
+  }
+  clearSession();
+  return data?.message || "Password updated.";
+}
+
 export function logoutAccount() {
   clearSession();
 }
