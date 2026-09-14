@@ -19,6 +19,7 @@ import {
   normalizeListing,
   duplicateStoredQuiz,
   publishStoredQuiz,
+  QUIZ_CATEGORIES,
   saveStoredQuiz,
   type QuizListing,
   type StoredQuizDocument,
@@ -10576,6 +10577,10 @@ export function CreateQuizEditor({
 
   async function handlePublish() {
     const quiz = getPersistedQuiz();
+    if (!listing.categories.length) {
+      setPublishError("Choose at least one category.");
+      return;
+    }
     if (!getToken()) {
       await persistQuiz(quiz);
       const next = `/quiz/${encodeURIComponent(quiz.id)}?publish=1`;
@@ -13570,6 +13575,42 @@ export function CreateQuizEditor({
                     setListing((prev) => ({ ...prev, coverImage }))
                   }
                 />
+              </div>
+            </div>
+
+            <div className="mt-4 text-sm text-[#1c2a33]">
+              <span className="font-medium text-[#4a5560]">Categories</span>
+              <p className="mt-1 text-xs text-[#5c6770]">Choose at least one.</p>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                {QUIZ_CATEGORIES.map((category) => {
+                  const checked = listing.categories.includes(category);
+                  return (
+                    <label
+                      key={category}
+                      className="flex cursor-pointer items-center gap-2 rounded-lg border border-[#1c2a33]/10 bg-white px-3 py-2 text-sm text-[#1c2a33] hover:border-[#2f5d76]/35"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        aria-label={category}
+                        onChange={(e) => {
+                          setListingSaved(false);
+                          setPublishError("");
+                          setListing((prev) => {
+                            const categories = e.target.checked
+                              ? prev.categories.includes(category)
+                                ? prev.categories
+                                : [...prev.categories, category]
+                              : prev.categories.filter((item) => item !== category);
+                            return { ...prev, categories };
+                          });
+                        }}
+                        className="h-4 w-4 cursor-pointer"
+                      />
+                      <span>{category}</span>
+                    </label>
+                  );
+                })}
               </div>
             </div>
 

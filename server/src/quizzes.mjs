@@ -15,6 +15,30 @@ function jsonSize(value) {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
+const QUIZ_CATEGORIES = [
+  "Politics",
+  "Culture and Religion",
+  "Personality",
+  "Guess Your ____",
+  "What's Your ____",
+  "Fandom",
+  "Knowledge Test",
+  "Other",
+];
+const QUIZ_CATEGORY_SET = new Set(QUIZ_CATEGORIES);
+
+function normalizeCategories(raw) {
+  if (!Array.isArray(raw)) return [];
+  const next = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    if (!QUIZ_CATEGORY_SET.has(item)) continue;
+    if (next.includes(item)) continue;
+    next.push(item);
+  }
+  return next;
+}
+
 function asDocument(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const data = raw;
@@ -82,8 +106,9 @@ function asDocument(raw) {
             coverImage:
               typeof data.listing.coverImage === "string" ? data.listing.coverImage : "",
             unlisted: data.listing.unlisted === true,
+            categories: normalizeCategories(data.listing.categories),
           }
-        : { description: "", coverImage: "", unlisted: false },
+        : { description: "", coverImage: "", unlisted: false, categories: [] },
   };
 }
 
@@ -118,6 +143,7 @@ function rowToCommunity(row) {
     publishedAt: Number(row.published_at_ms),
     author: row.username ?? "",
     liked: Boolean(row.liked),
+    categories: Array.isArray(row.categories) ? row.categories : [],
   };
 }
 
@@ -354,24 +380,31 @@ export function registerQuizRoutes(app, pool, requireUser) {
         description: "",
         coverImage: "",
         unlisted: false,
+        categories: [],
       };
       const description =
         typeof listing.description === "string" ? listing.description.slice(0, 2000) : "";
       const coverImage =
         typeof listing.coverImage === "string" ? listing.coverImage : "";
       const unlisted = listing.unlisted === true;
+      const categories = normalizeCategories(listing.categories);
+      if (categories.length < 1) {
+        res.status(400).json({ error: "Choose at least one category." });
+        return;
+      }
 
       const published = await pool.query(
         `INSERT INTO published_quizzes (
-           id, user_id, project_name, description, cover_image, unlisted, document, published_at
+           id, user_id, project_name, description, cover_image, unlisted, categories, document, published_at
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())
+         VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8::jsonb, NOW())
          ON CONFLICT (id) DO UPDATE SET
            user_id = EXCLUDED.user_id,
            project_name = EXCLUDED.project_name,
            description = EXCLUDED.description,
            cover_image = EXCLUDED.cover_image,
            unlisted = EXCLUDED.unlisted,
+           categories = EXCLUDED.categories,
            document = EXCLUDED.document,
            published_at = NOW()
          RETURNING (EXTRACT(EPOCH FROM published_at) * 1000)::bigint AS published_at_ms`,
@@ -382,6 +415,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
           description,
           coverImage,
           unlisted,
+          categories,
           JSON.stringify(doc),
         ],
       );
@@ -400,7 +434,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
     const userId = await requestUserId(pool, req);
     try {
       const result = await pool.query(
-        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, u.username,
+        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories, u.username,
                 (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms,
                 EXISTS(
                   SELECT 1 FROM published_quiz_likes l
@@ -451,7 +485,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
     const userId = await requestUserId(pool, req);
     try {
       const result = await pool.query(
-        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, u.username,
+        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories, u.username,
                 (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms,
                 EXISTS(
                   SELECT 1 FROM published_quiz_likes l
