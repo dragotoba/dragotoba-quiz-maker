@@ -20,6 +20,10 @@ import {
   getAccountsJwtSecret,
 } from "./auth.mjs";
 import { registerQuizRoutes } from "./quizzes.mjs";
+import {
+  authenticateIdentityProvision,
+  createIdentityProvisionHandler,
+} from "./identityProvision.mjs";
 
 const PORT = Number(process.env.PORT) || 3001;
 
@@ -46,8 +50,14 @@ try {
 const app = express();
 const corsOrigin = process.env.CORS_ORIGIN?.trim();
 app.use(cors({ origin: corsOrigin || true }));
-app.use(express.json({ limit: "8mb" }));
-
+app.use(
+  express.json({
+    limit: "8mb",
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
 function requestReturnOrigin(req) {
   const fromBody =
     typeof req.body?.returnOrigin === "string" ? req.body.returnOrigin.trim() : "";
@@ -430,6 +440,12 @@ async function requireUser(req, res, next) {
     res.status(500).json({ error: "Could not verify session." });
   }
 }
+
+app.post(
+  "/api/internal/identity/provision",
+  authenticateIdentityProvision,
+  createIdentityProvisionHandler(pool),
+);
 
 registerQuizRoutes(app, pool, requireUser);
 
