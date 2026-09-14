@@ -22,16 +22,46 @@ export type CommunityQuizSummary = {
   liked?: boolean;
   publishedAt: number;
   author: string;
+  categories?: string[];
 };
 
 export type QuizListing = {
   description: string;
   coverImage: string;
   unlisted: boolean;
+  categories: string[];
 };
 
+/** Allowed publish categories (display labels stored as-is). */
+export const QUIZ_CATEGORIES = [
+  "Politics",
+  "Culture and Religion",
+  "Personality",
+  "Guess Your ____",
+  "What's Your ____",
+  "Fandom",
+  "Knowledge Test",
+  "Other",
+] as const;
+
+export type QuizCategory = (typeof QUIZ_CATEGORIES)[number];
+
+const QUIZ_CATEGORY_SET = new Set<string>(QUIZ_CATEGORIES);
+
+export function normalizeCategories(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const next: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    if (!QUIZ_CATEGORY_SET.has(item)) continue;
+    if (next.includes(item)) continue;
+    next.push(item);
+  }
+  return next;
+}
+
 export function emptyListing(): QuizListing {
-  return { description: "", coverImage: "", unlisted: false };
+  return { description: "", coverImage: "", unlisted: false, categories: [] };
 }
 
 export function normalizeListing(raw: unknown): QuizListing {
@@ -41,6 +71,7 @@ export function normalizeListing(raw: unknown): QuizListing {
     description: typeof data.description === "string" ? data.description : "",
     coverImage: typeof data.coverImage === "string" ? data.coverImage : "",
     unlisted: data.unlisted === true,
+    categories: normalizeCategories(data.categories),
   };
 }
 
