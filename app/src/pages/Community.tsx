@@ -9,6 +9,7 @@ import {
   getCommunityQuizResult,
   getPublishedQuiz,
   listCommunityQuizzes,
+  remixCommunityQuiz,
   saveCommunityQuizResult,
   toggleCommunityLike,
   updateCommunityQuizCategories,
@@ -74,6 +75,7 @@ export default function Community() {
   const adminCategoryMenuRef = useRef<HTMLDivElement>(null);
   const [adminCategoryBusy, setAdminCategoryBusy] = useState(false);
   const [adminCategoryError, setAdminCategoryError] = useState("");
+  const [remixBusy, setRemixBusy] = useState(false);
 
   const allCategoriesSelected = selectedCategories.size === QUIZ_CATEGORIES.length;
   const filteredQuizzes = useMemo(
@@ -292,6 +294,23 @@ export default function Community() {
       setPlayError(err instanceof Error ? err.message : "Could not update like.");
     } finally {
       setLikeBusy(false);
+    }
+  }
+
+  async function handleRemix() {
+    if (!selected || remixBusy) return;
+    if (!getToken()) {
+      navigate(`/login?next=${encodeURIComponent(`/community/${selected.id}`)}`);
+      return;
+    }
+    setRemixBusy(true);
+    setPlayError("");
+    try {
+      const quiz = await remixCommunityQuiz(selected.id);
+      navigate(`/quiz/${quiz.id}`);
+    } catch (err) {
+      setPlayError(err instanceof Error ? err.message : "Could not remix quiz.");
+      setRemixBusy(false);
     }
   }
 
@@ -574,6 +593,18 @@ export default function Community() {
                   {selected.author ? (
                     <p className="mt-1 text-sm text-[#5c6770]">by {selected.author}</p>
                   ) : null}
+                  {selected.remixedFrom?.id ? (
+                    <p className="mt-1 text-sm text-[#5c6770]">
+                      Remixed from{" "}
+                      <Link
+                        to={`/community/${selected.remixedFrom.id}`}
+                        className="font-semibold text-[#2f5d76] no-underline hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {selected.remixedFrom.author.trim() || "a quiz"}
+                      </Link>
+                    </p>
+                  ) : null}
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     {quizCategories(selected).length > 0 ? (
                       <p className="text-xs text-[#5c6770]">
@@ -663,7 +694,15 @@ export default function Community() {
                   </div>
                   <button
                     type="button"
-                    disabled={playBusy}
+                    disabled={remixBusy || playBusy}
+                    onClick={() => void handleRemix()}
+                    className="mb-2 w-full cursor-pointer rounded-full border border-[#2f5d76] bg-white px-6 py-3 text-sm font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/5 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {remixBusy ? "Remixing…" : "Remix"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={playBusy || remixBusy}
                     onClick={() => void handlePlay()}
                     className="w-full cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e] disabled:cursor-not-allowed disabled:opacity-60"
                   >

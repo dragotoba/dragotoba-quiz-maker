@@ -25,6 +25,12 @@ export type CommunityQuizSummary = {
   publishedAt: number;
   author: string;
   categories?: string[];
+  remixedFrom?: { id: string; author: string } | null;
+};
+
+export type RemixedFrom = {
+  id: string;
+  author: string;
 };
 
 export type QuizListing = {
@@ -32,6 +38,7 @@ export type QuizListing = {
   coverImage: string;
   unlisted: boolean;
   categories: string[];
+  remixedFrom?: RemixedFrom;
 };
 
 /** Allowed publish categories (display labels stored as-is). */
@@ -49,6 +56,8 @@ export const QUIZ_CATEGORIES = [
 export type QuizCategory = (typeof QUIZ_CATEGORIES)[number];
 
 const QUIZ_CATEGORY_SET = new Set<string>(QUIZ_CATEGORIES);
+const LISTING_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function normalizeCategories(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -62,6 +71,14 @@ export function normalizeCategories(raw: unknown): string[] {
   return next;
 }
 
+export function normalizeRemixedFrom(raw: unknown): RemixedFrom | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const data = raw as Record<string, unknown>;
+  if (typeof data.id !== "string" || !LISTING_UUID_RE.test(data.id)) return undefined;
+  const author = typeof data.author === "string" ? data.author.trim().slice(0, 64) : "";
+  return { id: data.id, author };
+}
+
 export function emptyListing(): QuizListing {
   return { description: "", coverImage: "", unlisted: false, categories: [] };
 }
@@ -69,11 +86,13 @@ export function emptyListing(): QuizListing {
 export function normalizeListing(raw: unknown): QuizListing {
   if (!raw || typeof raw !== "object") return emptyListing();
   const data = raw as Record<string, unknown>;
+  const remixedFrom = normalizeRemixedFrom(data.remixedFrom);
   return {
     description: typeof data.description === "string" ? data.description : "",
     coverImage: typeof data.coverImage === "string" ? data.coverImage : "",
     unlisted: data.unlisted === true,
     categories: normalizeCategories(data.categories),
+    ...(remixedFrom ? { remixedFrom } : {}),
   };
 }
 
@@ -560,6 +579,21 @@ export async function toggleCommunityLike(id: string): Promise<{ likes: number; 
     likes: Number(data?.likes) || 0,
     liked: Boolean(data?.liked),
   };
+}
+
+export async function remixCommunityQuiz(id: string): Promise<StoredQuizDocument> {
+  if (!usesRemoteStorage()) {
+    throw new Error("Sign in to remix a quiz.");
+  }
+  const data = await apiJson<{ quiz: StoredQuizDocument }>(
+    `/community/quizzes/${encodeURIComponent(id)}/remix`,
+    { method: "POST" },
+  );
+  if (!data?.quiz || typeof data.quiz !== "object" || typeof data.quiz.id !== "string") {
+    throw new Error("Could not remix quiz.");
+  }
+  lastSavedKey.set(data.quiz.id, contentKey(data.quiz));
+  return data.quiz;
 }
 
 export async function updateCommunityQuizCategories(
