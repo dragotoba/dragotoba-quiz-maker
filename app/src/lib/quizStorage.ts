@@ -2,6 +2,8 @@ import { authHeaders, getToken } from "./auth";
 import type { ProjectVariable } from "./quizEngine";
 
 export const DEFAULT_PROJECT_NAME = "Untitled Quiz";
+/** Default cover / favicon when a quiz has no front image. */
+export const DEFAULT_QUIZ_COVER = "/quiz-maker-icon.png";
 export const LIBRARY_KEY = "dragotoba-quiz-maker:library";
 export const LEGACY_KEY = "dragotoba-quiz-maker:v1";
 
