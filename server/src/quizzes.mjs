@@ -44,6 +44,34 @@ function normalizeCategories(raw) {
   return next;
 }
 
+function normalizeRemixedFrom(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const id = typeof raw.id === "string" && isUuid(raw.id) ? raw.id : null;
+  if (!id) return null;
+  const author = typeof raw.author === "string" ? raw.author.trim().slice(0, 64) : "";
+  return { id, author };
+}
+
+function normalizeListing(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {
+      description: "",
+      coverImage: "",
+      unlisted: false,
+      categories: [],
+      remixedFrom: null,
+    };
+  }
+  const remixedFrom = normalizeRemixedFrom(raw.remixedFrom);
+  return {
+    description: typeof raw.description === "string" ? raw.description : "",
+    coverImage: typeof raw.coverImage === "string" ? raw.coverImage : "",
+    unlisted: raw.unlisted === true,
+    categories: normalizeCategories(raw.categories),
+    ...(remixedFrom ? { remixedFrom } : {}),
+  };
+}
+
 function asDocument(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const data = raw;
@@ -105,15 +133,8 @@ function asDocument(raw) {
     results: data.results ?? { textBoxes: [] },
     listing:
       data.listing && typeof data.listing === "object" && !Array.isArray(data.listing)
-        ? {
-            description:
-              typeof data.listing.description === "string" ? data.listing.description : "",
-            coverImage:
-              typeof data.listing.coverImage === "string" ? data.listing.coverImage : "",
-            unlisted: data.listing.unlisted === true,
-            categories: normalizeCategories(data.listing.categories),
-          }
-        : { description: "", coverImage: "", unlisted: false, categories: [] },
+        ? normalizeListing(data.listing)
+        : normalizeListing(null),
   };
 }
 
@@ -149,6 +170,16 @@ function rowToCommunity(row) {
     author: row.username ?? "",
     liked: Boolean(row.liked),
     categories: Array.isArray(row.categories) ? row.categories : [],
+    remixedFrom:
+      row.remixed_from_id && isUuid(row.remixed_from_id)
+        ? {
+            id: row.remixed_from_id,
+            author:
+              typeof row.remixed_from_author === "string"
+                ? row.remixed_from_author
+                : "",
+          }
+        : null,
   };
 }
 
@@ -398,12 +429,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
         return;
       }
       const doc = parsed.doc;
-      const listing = doc.listing ?? {
-        description: "",
-        coverImage: "",
-        unlisted: false,
-        categories: [],
-      };
+      const listing = normalizeListing(doc.listing);
       const description =
         typeof listing.description === "string" ? listing.description.slice(0, 2000) : "";
       const coverImage =
@@ -414,12 +440,20 @@ export function registerQuizRoutes(app, pool, requireUser) {
         res.status(400).json({ error: "Choose at least one category." });
         return;
       }
+      const remixedFrom = normalizeRemixedFrom(listing.remixedFrom);
+      // Keep remixedFrom on the frozen published document.
+      doc.listing = {
+        ...listing,
+        categories,
+        ...(remixedFrom ? { remixedFrom } : {}),
+      };
 
       const published = await pool.query(
         `INSERT INTO published_quizzes (
-           id, user_id, project_name, description, cover_image, unlisted, categories, document, published_at
+           id, user_id, project_name, description, cover_image, unlisted, categories,
+           remixed_from_id, remixed_from_author, document, published_at
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8::jsonb, NOW())
+         VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10::jsonb, NOW())
          ON CONFLICT (id) DO UPDATE SET
            user_id = EXCLUDED.user_id,
            project_name = EXCLUDED.project_name,
@@ -427,6 +461,8 @@ export function registerQuizRoutes(app, pool, requireUser) {
            cover_image = EXCLUDED.cover_image,
            unlisted = EXCLUDED.unlisted,
            categories = EXCLUDED.categories,
+           remixed_from_id = EXCLUDED.remixed_from_id,
+           remixed_from_author = EXCLUDED.remixed_from_author,
            document = EXCLUDED.document,
            published_at = NOW()
          RETURNING (EXTRACT(EPOCH FROM published_at) * 1000)::bigint AS published_at_ms`,
@@ -438,6 +474,8 @@ export function registerQuizRoutes(app, pool, requireUser) {
           coverImage,
           unlisted,
           categories,
+          remixedFrom?.id ?? null,
+          remixedFrom?.author ?? "",
           JSON.stringify(doc),
         ],
       );
@@ -456,7 +494,8 @@ export function registerQuizRoutes(app, pool, requireUser) {
     const userId = await requestUserId(pool, req);
     try {
       const result = await pool.query(
-        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories, u.username,
+        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories,
+                p.remixed_from_id, p.remixed_from_author, u.username,
                 (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms,
                 EXISTS(
                   SELECT 1 FROM published_quiz_likes l
@@ -507,7 +546,8 @@ export function registerQuizRoutes(app, pool, requireUser) {
     const userId = await requestUserId(pool, req);
     try {
       const result = await pool.query(
-        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories, u.username,
+        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories,
+                p.remixed_from_id, p.remixed_from_author, u.username,
                 (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms,
                 EXISTS(
                   SELECT 1 FROM published_quiz_likes l
@@ -574,7 +614,8 @@ export function registerQuizRoutes(app, pool, requireUser) {
          SET categories = $2::text[],
              document = COALESCE($3::jsonb, document)
          WHERE id = $1
-         RETURNING id, project_name, description, cover_image, like_count, categories, user_id,
+         RETURNING id, project_name, description, cover_image, like_count, categories,
+                   remixed_from_id, remixed_from_author, user_id,
                    (EXTRACT(EPOCH FROM published_at) * 1000)::bigint AS published_at_ms`,
         [
           req.params.id,
@@ -607,6 +648,66 @@ export function registerQuizRoutes(app, pool, requireUser) {
     } catch (error) {
       console.error("Update community categories failed:", error);
       res.status(500).json({ error: "Could not update categories." });
+    }
+  });
+
+  app.post("/api/community/quizzes/:id/remix", requireUser, async (req, res) => {
+    if (!isUuid(req.params.id)) {
+      res.status(400).json({ error: "Invalid quiz id." });
+      return;
+    }
+    try {
+      const source = await pool.query(
+        `SELECT p.document, p.project_name, u.username
+         FROM published_quizzes p
+         JOIN users u ON u.id = p.user_id
+         WHERE p.id = $1`,
+        [req.params.id],
+      );
+      const row = source.rows[0];
+      if (!row) {
+        res.status(404).json({ error: "Quiz not found." });
+        return;
+      }
+
+      const newId = crypto.randomUUID();
+      const remixedFrom = {
+        id: req.params.id,
+        author: typeof row.username === "string" ? row.username.trim().slice(0, 64) : "",
+      };
+      const sourceListing = normalizeListing(
+        row.document && typeof row.document === "object" ? row.document.listing : null,
+      );
+      const parsed = parseDocument({
+        ...(row.document && typeof row.document === "object" ? row.document : {}),
+        id: newId,
+        projectName:
+          typeof row.project_name === "string" && row.project_name.trim()
+            ? row.project_name.trim()
+            : DEFAULT_PROJECT_NAME,
+        updatedAt: Date.now(),
+        listing: {
+          ...sourceListing,
+          remixedFrom,
+        },
+      });
+      if (!parsed.ok) {
+        res.status(400).json({ error: parsed.error });
+        return;
+      }
+      const doc = parsed.doc;
+
+      await pool.query(
+        `INSERT INTO quizzes (user_id, id, project_name, updated_at, document)
+         VALUES ($1, $2, $3, $4, $5::jsonb)`,
+        [req.userId, doc.id, doc.projectName, new Date(doc.updatedAt), JSON.stringify(doc)],
+      );
+
+      noStore(res);
+      res.status(201).json({ quiz: doc });
+    } catch (error) {
+      console.error("Remix quiz failed:", error);
+      res.status(500).json({ error: "Could not remix quiz." });
     }
   });
 
