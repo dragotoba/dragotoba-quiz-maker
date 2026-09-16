@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AccountButton from "@/components/AccountButton";
 import { getToken } from "@/lib/auth";
 import {
+  DEFAULT_QUIZ_COVER,
+  QUIZ_CATEGORIES,
   getCommunityQuiz,
   getCommunityQuizResult,
   getPublishedQuiz,
@@ -29,10 +31,29 @@ function formatLikes(count: number) {
   return count === 1 ? "1 like" : `${count} likes`;
 }
 
+function quizCategories(quiz: CommunityQuizSummary) {
+  return Array.isArray(quiz.categories) ? quiz.categories : [];
+}
+
+function matchesCategoryFilter(
+  quiz: CommunityQuizSummary,
+  selected: Set<string>,
+  allSelected: boolean,
+) {
+  if (allSelected) return true;
+  if (selected.size === 0) return false;
+  return quizCategories(quiz).some((category) => selected.has(category));
+}
+
 export default function Community() {
   const { quizId } = useParams<{ quizId: string }>();
   const navigate = useNavigate();
   const [sort, setSort] = useState<CommunitySort>("trending");
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(
+    () => new Set(QUIZ_CATEGORIES),
+  );
+  const [categoryMenuOpen, setCategoryMenuOpen] = useState(false);
+  const categoryMenuRef = useRef<HTMLDivElement>(null);
   const [quizzes, setQuizzes] = useState<CommunityQuizSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -47,6 +68,23 @@ export default function Community() {
   const [playError, setPlayError] = useState("");
   const [likeBusy, setLikeBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  const allCategoriesSelected = selectedCategories.size === QUIZ_CATEGORIES.length;
+  const filteredQuizzes = useMemo(
+    () =>
+      quizzes.filter((quiz) =>
+        matchesCategoryFilter(quiz, selectedCategories, allCategoriesSelected),
+      ),
+    [quizzes, selectedCategories, allCategoriesSelected],
+  );
+
+  const categoryFilterLabel = allCategoriesSelected
+    ? "All categories"
+    : selectedCategories.size === 0
+      ? "No categories"
+      : selectedCategories.size === 1
+        ? [...selectedCategories][0]
+        : `${selectedCategories.size} categories`;
 
   useEffect(() => {
     let cancelled = false;
@@ -69,6 +107,24 @@ export default function Community() {
       cancelled = true;
     };
   }, [sort]);
+
+  useEffect(() => {
+    if (!categoryMenuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!categoryMenuRef.current?.contains(e.target as Node)) {
+        setCategoryMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCategoryMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [categoryMenuOpen]);
 
   useEffect(() => {
     if (!quizId) {
@@ -115,6 +171,15 @@ export default function Community() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selected, selectedError, playQuiz, navigate]);
+
+  function toggleCategory(category: string) {
+    setSelectedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
+      return next;
+    });
+  }
 
   function applyLike(id: string, likes: number, liked: boolean) {
     setQuizzes((prev) =>
@@ -219,23 +284,81 @@ export default function Community() {
 
   return (
     <main className="qh-page relative min-h-screen w-full font-[Poppins,sans-serif] text-[#1a1a1a]">
-      <label className="absolute top-6 left-6 z-[5] sm:left-8">
-        <span className="sr-only">Sort community quizzes</span>
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value as CommunitySort)}
-          className="cursor-pointer appearance-none rounded-full border border-[#2f5d76]/25 bg-white/70 py-2 pr-9 pl-4 text-sm font-semibold text-[#2f5d76] shadow-sm outline-none hover:bg-white hover:text-[#244a5e] focus:border-[#2f5d76]"
-        >
-          {SORT_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <span className="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-[10px] text-[#2f5d76]">
-          ▾
-        </span>
-      </label>
+      <div className="absolute top-6 left-6 z-[5] flex flex-wrap items-center gap-2 sm:left-8">
+        <label className="relative">
+          <span className="sr-only">Sort community quizzes</span>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as CommunitySort)}
+            className="cursor-pointer appearance-none rounded-full border border-[#2f5d76]/25 bg-white/70 py-2 pr-9 pl-4 text-sm font-semibold text-[#2f5d76] shadow-sm outline-none hover:bg-white hover:text-[#244a5e] focus:border-[#2f5d76]"
+          >
+            {SORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <span className="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-[10px] text-[#2f5d76]">
+            ▾
+          </span>
+        </label>
+
+        <div className="relative" ref={categoryMenuRef}>
+          <button
+            type="button"
+            aria-haspopup="listbox"
+            aria-expanded={categoryMenuOpen}
+            onClick={() => setCategoryMenuOpen((open) => !open)}
+            className="cursor-pointer rounded-full border border-[#2f5d76]/25 bg-white/70 py-2 pr-9 pl-4 text-sm font-semibold text-[#2f5d76] shadow-sm outline-none hover:bg-white hover:text-[#244a5e]"
+          >
+            {categoryFilterLabel}
+            <span className="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-[10px] text-[#2f5d76]">
+              ▾
+            </span>
+          </button>
+          {categoryMenuOpen ? (
+            <div
+              role="listbox"
+              aria-label="Filter by category"
+              className="absolute top-full left-0 z-10 mt-2 max-h-72 w-64 overflow-y-auto rounded-xl border border-[#1c2a33]/10 bg-white p-2 shadow-[0_8px_24px_rgba(0,0,0,0.12)]"
+            >
+              <div className="mb-1 flex gap-2 px-1 pb-1">
+                <button
+                  type="button"
+                  onClick={() => setSelectedCategories(new Set(QUIZ_CATEGORIES))}
+                  className="cursor-pointer rounded-md px-2 py-1 text-xs font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/8"
+                >
+                  All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedCategories(new Set())}
+                  className="cursor-pointer rounded-md px-2 py-1 text-xs font-semibold text-[#5c6770] hover:bg-black/5"
+                >
+                  None
+                </button>
+              </div>
+              {QUIZ_CATEGORIES.map((category) => {
+                const checked = selectedCategories.has(category);
+                return (
+                  <label
+                    key={category}
+                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-[#1c2a33] hover:bg-[#f4f1ea]"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleCategory(category)}
+                      className="h-4 w-4 cursor-pointer"
+                    />
+                    <span>{category}</span>
+                  </label>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      </div>
 
       <AccountButton className="absolute top-6 right-6 z-[5] sm:right-8" />
 
@@ -259,34 +382,39 @@ export default function Community() {
           </p>
         ) : loading ? (
           <p className="mt-10 text-sm text-[#4a5560]">Loading quizzes…</p>
-        ) : quizzes.length === 0 ? (
+        ) : filteredQuizzes.length === 0 ? (
           <div className="mt-10 rounded-2xl border border-[#1c2a33]/10 bg-white/80 px-6 py-10 shadow-[0_8px_32px_rgba(0,0,0,0.08)]">
             <p className="text-base font-semibold text-[#1c2a33]">
-              No community quizzes yet.
+              {quizzes.length === 0
+                ? "No community quizzes yet."
+                : "No quizzes match these categories."}
             </p>
             <p className="mt-2 max-w-lg text-sm leading-relaxed text-[#4a5560]">
-              Published quizzes will show up here. Check back soon, or create one
-              of your own.
+              {quizzes.length === 0
+                ? "Published quizzes will show up here. Check back soon, or create one of your own."
+                : "Try selecting more categories, or choose All."}
             </p>
           </div>
         ) : (
           <ul className="mt-10 m-0 grid list-none grid-cols-1 gap-5 p-0 sm:grid-cols-2 lg:grid-cols-3">
-            {quizzes.map((quiz) => (
+            {filteredQuizzes.map((quiz) => {
+              const categories = quizCategories(quiz);
+              return (
               <li key={quiz.id}>
                 <Link
                   to={`/community/${quiz.id}`}
                   className="block w-full overflow-hidden rounded-2xl border border-[#1c2a33]/10 bg-white/80 text-left no-underline shadow-[0_8px_24px_rgba(0,0,0,0.08)] hover:border-[#2f5d76]/40"
                 >
                   <div className="flex h-40 items-center justify-center bg-[#f4f1ea]">
-                    {quiz.coverImage ? (
-                      <img
-                        src={quiz.coverImage}
-                        alt=""
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <span className="text-sm text-[#5c6770]">No image</span>
-                    )}
+                    <img
+                      src={quiz.coverImage.trim() || DEFAULT_QUIZ_COVER}
+                      alt=""
+                      className={
+                        quiz.coverImage.trim()
+                          ? "h-full w-full object-cover"
+                          : "h-24 w-24 object-contain"
+                      }
+                    />
                   </div>
                   <div className="p-4">
                     <h2 className="truncate text-base font-semibold text-[#1c2a33]">
@@ -300,13 +428,26 @@ export default function Community() {
                     <p className="mt-1 line-clamp-2 min-h-[2.5rem] text-sm leading-relaxed text-[#4a5560]">
                       {quiz.description.trim() || "No description"}
                     </p>
-                    <p className="mt-2 text-xs font-medium text-[#2f5d76]">
-                      {formatLikes(quiz.likes)}
-                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                      <span className="font-medium text-[#2f5d76]">
+                        {formatLikes(quiz.likes)}
+                      </span>
+                      {categories.length > 0 ? (
+                        <>
+                          <span className="text-[#c5ccd2]" aria-hidden="true">
+                            ·
+                          </span>
+                          <span className="min-w-0 text-[#5c6770]">
+                            {categories.join(" · ")}
+                          </span>
+                        </>
+                      ) : null}
+                    </div>
                   </div>
                 </Link>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </div>
@@ -340,19 +481,17 @@ export default function Community() {
             ) : selected ? (
               <>
                 <div className="shrink-0 p-5 pb-0">
-                  {selected.coverImage ? (
-                    <div className="flex max-h-[40vh] items-center justify-center overflow-auto rounded-xl bg-[#f4f1ea]">
-                      <img
-                        src={selected.coverImage}
-                        alt=""
-                        className="max-h-[40vh] w-auto max-w-full object-contain"
-                      />
-                    </div>
-                  ) : (
-                    <div className="flex h-28 items-center justify-center rounded-xl bg-[#f4f1ea] text-sm text-[#5c6770]">
-                      No image
-                    </div>
-                  )}
+                  <div className="flex max-h-[40vh] items-center justify-center overflow-auto rounded-xl bg-[#f4f1ea]">
+                    <img
+                      src={selected.coverImage.trim() || DEFAULT_QUIZ_COVER}
+                      alt=""
+                      className={
+                        selected.coverImage.trim()
+                          ? "max-h-[40vh] w-auto max-w-full object-contain"
+                          : "h-28 w-28 object-contain"
+                      }
+                    />
+                  </div>
                   <h2
                     id="community-quiz-title"
                     className="mt-4 text-xl font-semibold text-[#1c2a33]"
@@ -361,6 +500,11 @@ export default function Community() {
                   </h2>
                   {selected.author ? (
                     <p className="mt-1 text-sm text-[#5c6770]">by {selected.author}</p>
+                  ) : null}
+                  {quizCategories(selected).length > 0 ? (
+                    <p className="mt-2 text-xs text-[#5c6770]">
+                      {quizCategories(selected).join(" · ")}
+                    </p>
                   ) : null}
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
