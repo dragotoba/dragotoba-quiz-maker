@@ -3,6 +3,7 @@ export type AuthUser = {
   username: string;
   email: string;
   displayName: string | null;
+  isAdmin?: boolean;
 };
 
 type AuthResponse = {
@@ -29,7 +30,10 @@ export function getStoredUser(): AuthUser | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as AuthUser;
     if (!parsed?.id || !parsed.username || !parsed.email) return null;
-    return parsed;
+    return {
+      ...parsed,
+      isAdmin: parsed.isAdmin === true,
+    };
   } catch {
     return null;
   }
@@ -184,6 +188,25 @@ export async function updateDisplayName(displayName: string): Promise<AuthUser> 
   }
   updateStoredUser(data.user);
   return data.user;
+}
+
+export async function fetchCurrentUser(): Promise<AuthUser | null> {
+  const token = getToken();
+  if (!token) return null;
+  try {
+    const res = await fetch("/api/auth/me", {
+      method: "GET",
+      headers: authHeaders(),
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { user?: AuthUser };
+    if (!data?.user?.id) return null;
+    updateStoredUser(data.user);
+    return data.user;
+  } catch {
+    return null;
+  }
 }
 
 const FORGOT_PASSWORD_MESSAGE =
