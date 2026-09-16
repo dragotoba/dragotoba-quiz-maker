@@ -27,12 +27,31 @@ export function getAccountsJwtSecret() {
   return "dev-only-accounts-jwt-secret";
 }
 
+/** Admin emails from Railway `ADMIN_EMAIL` (comma-separated allowed). */
+export function getAdminEmails() {
+  const raw = process.env.ADMIN_EMAIL?.trim() || "";
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(",")
+      .map((part) => normalizeEmail(part))
+      .filter(Boolean),
+  );
+}
+
+export function isAdminEmail(email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return false;
+  return getAdminEmails().has(normalized);
+}
+
 export function publicUser(row) {
   return {
     id: row.id,
     username: row.username,
     email: row.email,
     displayName: row.display_name ?? null,
+    isAdmin: isAdminEmail(row.email),
   };
 }
 

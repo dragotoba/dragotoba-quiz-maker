@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AccountButton from "@/components/AccountButton";
-import { getToken } from "@/lib/auth";
+import { fetchCurrentUser, getStoredUser, getToken } from "@/lib/auth";
 import {
   DEFAULT_QUIZ_COVER,
   QUIZ_CATEGORIES,
@@ -11,6 +11,7 @@ import {
   listCommunityQuizzes,
   saveCommunityQuizResult,
   toggleCommunityLike,
+  updateCommunityQuizCategories,
   type CommunityQuizSummary,
   type CommunitySort,
   type SavedCommunityResult,
@@ -68,6 +69,11 @@ export default function Community() {
   const [playError, setPlayError] = useState("");
   const [likeBusy, setLikeBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(() => getStoredUser()?.isAdmin === true);
+  const [adminCategoryMenuOpen, setAdminCategoryMenuOpen] = useState(false);
+  const adminCategoryMenuRef = useRef<HTMLDivElement>(null);
+  const [adminCategoryBusy, setAdminCategoryBusy] = useState(false);
+  const [adminCategoryError, setAdminCategoryError] = useState("");
 
   const allCategoriesSelected = selectedCategories.size === QUIZ_CATEGORIES.length;
   const filteredQuizzes = useMemo(
@@ -85,6 +91,17 @@ export default function Community() {
       : selectedCategories.size === 1
         ? [...selectedCategories][0]
         : `${selectedCategories.size} categories`;
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const user = await fetchCurrentUser();
+      if (!cancelled) setIsAdmin(user?.isAdmin === true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,6 +144,29 @@ export default function Community() {
   }, [categoryMenuOpen]);
 
   useEffect(() => {
+    if (!adminCategoryMenuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!adminCategoryMenuRef.current?.contains(e.target as Node)) {
+        setAdminCategoryMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAdminCategoryMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [adminCategoryMenuOpen]);
+
+  useEffect(() => {
+    setAdminCategoryMenuOpen(false);
+    setAdminCategoryError("");
+  }, [quizId]);
+
+  useEffect(() => {
     if (!quizId) {
       setSelected(null);
       setSelectedError("");
@@ -166,11 +206,13 @@ export default function Community() {
   useEffect(() => {
     if ((!selected && !selectedError) || playQuiz) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") navigate("/community");
+      if (e.key !== "Escape") return;
+      if (adminCategoryMenuOpen || categoryMenuOpen) return;
+      navigate("/community");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected, selectedError, playQuiz, navigate]);
+  }, [selected, selectedError, playQuiz, navigate, adminCategoryMenuOpen, categoryMenuOpen]);
 
   function toggleCategory(category: string) {
     setSelectedCategories((prev) => {
@@ -186,6 +228,37 @@ export default function Community() {
       prev.map((quiz) => (quiz.id === id ? { ...quiz, likes, liked } : quiz)),
     );
     setSelected((prev) => (prev && prev.id === id ? { ...prev, likes, liked } : prev));
+  }
+
+  function applyListing(listing: CommunityQuizSummary) {
+    setQuizzes((prev) =>
+      prev.map((quiz) => (quiz.id === listing.id ? { ...quiz, ...listing } : quiz)),
+    );
+    setSelected((prev) => (prev && prev.id === listing.id ? { ...prev, ...listing } : prev));
+  }
+
+  async function handleAdminToggleCategory(category: string) {
+    if (!selected || adminCategoryBusy) return;
+    const current = quizCategories(selected);
+    const next = current.includes(category)
+      ? current.filter((item) => item !== category)
+      : [...current, category];
+    if (next.length < 1) {
+      setAdminCategoryError("Keep at least one category.");
+      return;
+    }
+    setAdminCategoryBusy(true);
+    setAdminCategoryError("");
+    try {
+      const listing = await updateCommunityQuizCategories(selected.id, next);
+      applyListing(listing);
+    } catch (err) {
+      setAdminCategoryError(
+        err instanceof Error ? err.message : "Could not update categories.",
+      );
+    } finally {
+      setAdminCategoryBusy(false);
+    }
   }
 
   async function handleCopyLink() {
@@ -501,9 +574,58 @@ export default function Community() {
                   {selected.author ? (
                     <p className="mt-1 text-sm text-[#5c6770]">by {selected.author}</p>
                   ) : null}
-                  {quizCategories(selected).length > 0 ? (
-                    <p className="mt-2 text-xs text-[#5c6770]">
-                      {quizCategories(selected).join(" · ")}
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    {quizCategories(selected).length > 0 ? (
+                      <p className="text-xs text-[#5c6770]">
+                        {quizCategories(selected).join(" · ")}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-[#5c6770]">No categories</p>
+                    )}
+                    {isAdmin ? (
+                      <div className="relative" ref={adminCategoryMenuRef}>
+                        <button
+                          type="button"
+                          aria-haspopup="listbox"
+                          aria-expanded={adminCategoryMenuOpen}
+                          disabled={adminCategoryBusy}
+                          onClick={() => setAdminCategoryMenuOpen((open) => !open)}
+                          className="cursor-pointer rounded-full border border-[#2f5d76]/25 bg-white px-3 py-1 text-xs font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/5 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Edit categories ▾
+                        </button>
+                        {adminCategoryMenuOpen ? (
+                          <div
+                            role="listbox"
+                            aria-label="Edit quiz categories"
+                            className="absolute top-full left-0 z-20 mt-2 max-h-64 w-64 overflow-y-auto rounded-xl border border-[#1c2a33]/10 bg-white p-2 shadow-[0_8px_24px_rgba(0,0,0,0.12)]"
+                          >
+                            {QUIZ_CATEGORIES.map((category) => {
+                              const checked = quizCategories(selected).includes(category);
+                              return (
+                                <label
+                                  key={category}
+                                  className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-[#1c2a33] hover:bg-[#f4f1ea]"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    disabled={adminCategoryBusy}
+                                    onChange={() => void handleAdminToggleCategory(category)}
+                                    className="h-4 w-4 cursor-pointer"
+                                  />
+                                  <span>{category}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                  {adminCategoryError ? (
+                    <p className="mt-2 text-xs font-medium text-[#7a3b3b]" role="alert">
+                      {adminCategoryError}
                     </p>
                   ) : null}
                 </div>

@@ -562,6 +562,23 @@ export async function toggleCommunityLike(id: string): Promise<{ likes: number; 
   };
 }
 
+export async function updateCommunityQuizCategories(
+  id: string,
+  categories: string[],
+): Promise<CommunityQuizSummary> {
+  const data = await apiJson<{ quiz: CommunityQuizSummary }>(
+    `/community/quizzes/${encodeURIComponent(id)}/categories`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ categories }),
+    },
+  );
+  if (!data?.quiz?.id) {
+    throw new Error("Could not update categories.");
+  }
+  return data.quiz;
+}
+
 export async function saveStoredQuiz(doc: StoredQuizDocument, options?: { keepalive?: boolean }) {
   const next: StoredQuizDocument = {
     ...withValidId(doc),

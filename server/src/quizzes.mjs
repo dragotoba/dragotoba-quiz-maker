@@ -1,4 +1,9 @@
-import { localUserIdFromToken, readBearerToken } from "./auth.mjs";
+import {
+  isAdminEmail,
+  localUserIdFromToken,
+  normalizeEmail,
+  readBearerToken,
+} from "./auth.mjs";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -149,6 +154,23 @@ function rowToCommunity(row) {
 
 async function requestUserId(pool, req) {
   return localUserIdFromToken(pool, readBearerToken(req));
+}
+
+async function loadUserEmail(pool, userId) {
+  if (!userId) return null;
+  const result = await pool.query(`SELECT email FROM users WHERE id = $1 LIMIT 1`, [
+    userId,
+  ]);
+  return result.rows[0]?.email ? normalizeEmail(result.rows[0].email) : null;
+}
+
+async function requireAdmin(pool, req, res) {
+  const email = await loadUserEmail(pool, req.userId);
+  if (!email || !isAdminEmail(email)) {
+    res.status(403).json({ error: "Admin access required." });
+    return false;
+  }
+  return true;
 }
 
 const COMMUNITY_SORTS = new Set(["trending", "liked", "recent"]);
@@ -506,6 +528,85 @@ export function registerQuizRoutes(app, pool, requireUser) {
     } catch (error) {
       console.error("Load community listing failed:", error);
       res.status(500).json({ error: "Could not load quiz." });
+    }
+  });
+
+  app.patch("/api/community/quizzes/:id/categories", requireUser, async (req, res) => {
+    if (!isUuid(req.params.id)) {
+      res.status(400).json({ error: "Invalid quiz id." });
+      return;
+    }
+    if (!(await requireAdmin(pool, req, res))) return;
+
+    const categories = normalizeCategories(req.body?.categories);
+    if (categories.length < 1) {
+      res.status(400).json({ error: "Choose at least one category." });
+      return;
+    }
+
+    try {
+      const existing = await pool.query(
+        `SELECT document FROM published_quizzes WHERE id = $1`,
+        [req.params.id],
+      );
+      const row = existing.rows[0];
+      if (!row) {
+        res.status(404).json({ error: "Quiz not found." });
+        return;
+      }
+
+      let document = row.document;
+      if (document && typeof document === "object" && !Array.isArray(document)) {
+        const listing =
+          document.listing && typeof document.listing === "object" && !Array.isArray(document.listing)
+            ? { ...document.listing, categories }
+            : {
+                description: "",
+                coverImage: "",
+                unlisted: false,
+                categories,
+              };
+        document = { ...document, listing };
+      }
+
+      const updated = await pool.query(
+        `UPDATE published_quizzes
+         SET categories = $2::text[],
+             document = COALESCE($3::jsonb, document)
+         WHERE id = $1
+         RETURNING id, project_name, description, cover_image, like_count, categories, user_id,
+                   (EXTRACT(EPOCH FROM published_at) * 1000)::bigint AS published_at_ms`,
+        [
+          req.params.id,
+          categories,
+          document ? JSON.stringify(document) : null,
+        ],
+      );
+      const next = updated.rows[0];
+      if (!next) {
+        res.status(404).json({ error: "Quiz not found." });
+        return;
+      }
+
+      const author = await pool.query(`SELECT username FROM users WHERE id = $1 LIMIT 1`, [
+        next.user_id,
+      ]);
+      const liked = await pool.query(
+        `SELECT 1 FROM published_quiz_likes WHERE quiz_id = $1 AND user_id = $2 LIMIT 1`,
+        [req.params.id, req.userId],
+      );
+
+      noStore(res);
+      res.json({
+        quiz: rowToCommunity({
+          ...next,
+          username: author.rows[0]?.username ?? "",
+          liked: liked.rowCount > 0,
+        }),
+      });
+    } catch (error) {
+      console.error("Update community categories failed:", error);
+      res.status(500).json({ error: "Could not update categories." });
     }
   });
 
