@@ -25,6 +25,8 @@ import {
   publishStoredQuiz,
   QUIZ_CATEGORIES,
   saveStoredQuiz,
+  normalizeTagToken,
+  normalizeTags,
   type QuizListing,
   type StoredQuizDocument,
 } from "@/lib/quizStorage";
@@ -2844,6 +2846,125 @@ function AxisImagePicker({
           </div>,
           document.body,
         )}
+    </div>
+  );
+}
+
+function ListingTagsField({
+  tags,
+  onCheckpoint,
+  onChange,
+}: {
+  tags: string[];
+  onCheckpoint: () => void;
+  onChange: (tags: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const tagsRef = useRef(tags);
+  tagsRef.current = tags;
+
+  function addTagsFromText(raw: string, commitTrailing: boolean) {
+    const parts = raw.split(",");
+    let trailing = "";
+    const toCommit: string[] = [];
+    if (commitTrailing) {
+      for (const part of parts) {
+        const tag = normalizeTagToken(part);
+        if (tag) toCommit.push(tag);
+      }
+    } else {
+      trailing = (parts.pop() ?? "").replace(/^#+/, "");
+      for (const part of parts) {
+        const tag = normalizeTagToken(part);
+        if (tag) toCommit.push(tag);
+      }
+    }
+
+    if (toCommit.length > 0) {
+      const next = [...tagsRef.current];
+      const seen = new Set(next.map((tag) => tag.toLowerCase()));
+      let changed = false;
+      for (const tag of toCommit) {
+        const key = tag.toLowerCase();
+        if (seen.has(key)) continue;
+        if (next.length >= 30) break;
+        seen.add(key);
+        next.push(tag);
+        changed = true;
+      }
+      if (changed) {
+        onCheckpoint();
+        onChange(normalizeTags(next));
+      }
+    }
+    setDraft(trailing);
+  }
+
+  function removeTag(index: number) {
+    onCheckpoint();
+    onChange(tags.filter((_, i) => i !== index));
+  }
+
+  return (
+    <div
+      className="mt-1.5 flex min-h-10 cursor-text flex-wrap items-center gap-1.5 rounded-lg border border-[#1c2a33]/15 bg-white px-2.5 py-2 focus-within:border-[#2f5d76]"
+      onClick={() => inputRef.current?.focus()}
+    >
+      {tags.map((tag, index) => (
+        <span
+          key={`${tag}-${index}`}
+          className="inline-flex max-w-full items-center gap-1 rounded-full border border-[#2f5d76]/25 bg-[#2f5d76]/10 py-0.5 pr-1 pl-2.5 text-sm text-[#1c2a33]"
+        >
+          <span className="truncate">#{tag}</span>
+          <button
+            type="button"
+            aria-label={`Remove tag ${tag}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              removeTag(index);
+            }}
+            className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#4a5560] hover:bg-[#2f5d76]/15 hover:text-[#1c2a33]"
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <label className="inline-flex min-w-[7rem] flex-1 items-center text-sm text-[#1c2a33]">
+        <span className="select-none text-[#5c6770]" aria-hidden>
+          #
+        </span>
+        <input
+          ref={inputRef}
+          aria-label="Add tag"
+          value={draft}
+          spellCheck={false}
+          placeholder="tag"
+          onChange={(e) => {
+            const next = e.target.value;
+            if (next.includes(",")) {
+              addTagsFromText(next, next.endsWith(","));
+              return;
+            }
+            setDraft(next.replace(/^#+/, ""));
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === ",") {
+              e.preventDefault();
+              if (draft.trim()) addTagsFromText(draft, true);
+              return;
+            }
+            if (e.key === "Backspace" && draft === "" && tags.length > 0) {
+              e.preventDefault();
+              removeTag(tags.length - 1);
+            }
+          }}
+          onBlur={() => {
+            if (draft.trim()) addTagsFromText(draft, true);
+          }}
+          className="min-w-0 flex-1 border-none bg-transparent px-0.5 py-0.5 text-sm text-[#1c2a33] outline-none placeholder:text-[#5c6770]/50"
+        />
+      </label>
     </div>
   );
 }
@@ -14234,6 +14355,21 @@ export function CreateQuizEditor({
                   );
                 })}
               </div>
+            </div>
+
+            <div className="mt-4 text-sm text-[#1c2a33]">
+              <span className="font-medium text-[#4a5560]">Tags</span>
+              <p className="mt-1 text-xs text-[#5c6770]">
+                Type a tag, then press Enter or comma. Optional.
+              </p>
+              <ListingTagsField
+                tags={listing.tags}
+                onCheckpoint={() => {
+                  setListingSaved(false);
+                  setPublishError("");
+                }}
+                onChange={(tags) => setListing((prev) => ({ ...prev, tags }))}
+              />
             </div>
 
             <label className="mt-5 flex cursor-pointer items-center gap-2 text-sm text-[#1c2a33]">

@@ -44,6 +44,35 @@ function normalizeCategories(raw) {
   return next;
 }
 
+const MAX_TAG_LENGTH = 40;
+const MAX_TAGS = 30;
+
+function normalizeTagToken(raw) {
+  if (typeof raw !== "string") return "";
+  let tag = raw.trim();
+  while (tag.startsWith("#")) tag = tag.slice(1).trim();
+  tag = tag.replace(/\s+/g, " ");
+  if (!tag) return "";
+  if (tag.length > MAX_TAG_LENGTH) tag = tag.slice(0, MAX_TAG_LENGTH);
+  return tag;
+}
+
+function normalizeTags(raw) {
+  if (!Array.isArray(raw)) return [];
+  const next = [];
+  const seen = new Set();
+  for (const item of raw) {
+    const tag = normalizeTagToken(item);
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(tag);
+    if (next.length >= MAX_TAGS) break;
+  }
+  return next;
+}
+
 function normalizeRemixedFrom(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const id = typeof raw.id === "string" && isUuid(raw.id) ? raw.id : null;
@@ -71,6 +100,7 @@ function normalizeListing(raw) {
       coverImage: "",
       unlisted: false,
       categories: [],
+      tags: [],
       remixedFrom: null,
     };
   }
@@ -80,6 +110,7 @@ function normalizeListing(raw) {
     coverImage: typeof raw.coverImage === "string" ? raw.coverImage : "",
     unlisted: raw.unlisted === true,
     categories: normalizeCategories(raw.categories),
+    tags: normalizeTags(raw.tags),
     ...(remixedFrom ? { remixedFrom } : {}),
   };
 }
@@ -182,6 +213,7 @@ function rowToCommunity(row) {
     author: row.author_name ?? publicAuthorName(row),
     liked: Boolean(row.liked),
     categories: Array.isArray(row.categories) ? row.categories : [],
+    tags: normalizeTags(row.tags),
     remixedFrom:
       row.remixed_from_id && isUuid(row.remixed_from_id)
         ? {
@@ -456,20 +488,22 @@ export function registerQuizRoutes(app, pool, requireUser) {
         res.status(400).json({ error: "Choose at least one category." });
         return;
       }
+      const tags = normalizeTags(listing.tags);
       const remixedFrom = normalizeRemixedFrom(listing.remixedFrom);
       // Keep remixedFrom on the frozen published document.
       doc.listing = {
         ...listing,
         categories,
+        tags,
         ...(remixedFrom ? { remixedFrom } : {}),
       };
 
       const published = await pool.query(
         `INSERT INTO published_quizzes (
-           id, user_id, project_name, description, cover_image, unlisted, categories,
+           id, user_id, project_name, description, cover_image, unlisted, categories, tags,
            remixed_from_id, remixed_from_author, document, published_at
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10::jsonb, NOW())
+         VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8::text[], $9, $10, $11::jsonb, NOW())
          ON CONFLICT (id) DO UPDATE SET
            user_id = EXCLUDED.user_id,
            project_name = EXCLUDED.project_name,
@@ -477,6 +511,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
            cover_image = EXCLUDED.cover_image,
            unlisted = EXCLUDED.unlisted,
            categories = EXCLUDED.categories,
+           tags = EXCLUDED.tags,
            remixed_from_id = EXCLUDED.remixed_from_id,
            remixed_from_author = EXCLUDED.remixed_from_author,
            document = EXCLUDED.document,
@@ -490,6 +525,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
           coverImage,
           unlisted,
           categories,
+          tags,
           remixedFrom?.id ?? null,
           remixedFrom?.author ?? "",
           JSON.stringify(doc),
@@ -510,7 +546,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
     const userId = await requestUserId(pool, req);
     try {
       const result = await pool.query(
-        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories,
+        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories, p.tags,
                 p.remixed_from_id, p.remixed_from_author, ${AUTHOR_SELECT}, ${REMIX_AUTHOR_SELECT},
                 (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms,
                 EXISTS(
@@ -562,7 +598,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
     const userId = await requestUserId(pool, req);
     try {
       const result = await pool.query(
-        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories,
+        `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories, p.tags,
                 p.remixed_from_id, p.remixed_from_author, ${AUTHOR_SELECT}, ${REMIX_AUTHOR_SELECT},
                 (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms,
                 EXISTS(
@@ -632,7 +668,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
          SET categories = $2::text[],
              document = COALESCE($3::jsonb, document)
          WHERE id = $1
-         RETURNING id, project_name, description, cover_image, like_count, categories,
+         RETURNING id, project_name, description, cover_image, like_count, categories, tags,
                    remixed_from_id, remixed_from_author, user_id,
                    (EXTRACT(EPOCH FROM published_at) * 1000)::bigint AS published_at_ms`,
         [
