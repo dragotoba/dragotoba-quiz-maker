@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import AccountButton from "@/components/AccountButton";
 import { SymbolIcon } from "@/components/SymbolIcon";
@@ -23,6 +23,78 @@ type IconSets = {
 const CIRCLE_RADIUS = 172;
 const CIRCLE_COUNT = 15;
 
+function SymbolMarquee({
+  symbols,
+  speed,
+}: {
+  symbols: IconSymbol[];
+  speed: "slow" | "fast";
+}) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const segmentRef = useRef<HTMLDivElement>(null);
+  const [copies, setCopies] = useState(2);
+  const [shiftPx, setShiftPx] = useState(0);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    const segment = segmentRef.current;
+    if (!viewport || !segment) return;
+
+    function measure() {
+      const vp = viewportRef.current;
+      const seg = segmentRef.current;
+      if (!vp || !seg) return;
+      const segmentWidth = seg.getBoundingClientRect().width;
+      if (segmentWidth <= 0) return;
+      const viewportWidth = vp.clientWidth;
+      // Enough identical segments that the viewport stays filled after the loop seam.
+      const needed = Math.max(2, Math.ceil(viewportWidth / segmentWidth) + 1);
+      setCopies(needed);
+      setShiftPx(segmentWidth);
+    }
+
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(viewport);
+    ro.observe(segment);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [symbols]);
+
+  return (
+    <div ref={viewportRef} className="h-full w-full overflow-hidden">
+      <div
+        className={`qh-marquee-track h-full items-center ${
+          speed === "slow" ? "qh-marquee-slow" : "qh-marquee-fast"
+        }`}
+        style={
+          {
+            "--qh-marquee-shift": `${shiftPx}px`,
+          } as CSSProperties
+        }
+      >
+        {Array.from({ length: copies }, (_, copyIndex) => (
+          <div
+            key={copyIndex}
+            ref={copyIndex === 0 ? segmentRef : undefined}
+            className="flex h-full items-center gap-14 pr-14"
+            aria-hidden={copyIndex > 0}
+          >
+            {symbols.map((sym, i) => (
+              <div key={`${copyIndex}-${sym.id}-${i}`} className="h-8 w-8 shrink-0">
+                <SymbolIcon symbol={sym} />
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Index() {
   const navigate = useNavigate();
   const [sets, setSets] = useState<IconSets | null>(null);
@@ -35,9 +107,6 @@ export default function Index() {
       bar2Set: shuffle(SYMBOLS).slice(0, half),
     });
   }, []);
-
-  const bar1Items = sets ? [...sets.bar1Set, ...sets.bar1Set] : [];
-  const bar2Items = sets ? [...sets.bar2Set, ...sets.bar2Set] : [];
 
   return (
     <main className="qh-page relative flex min-h-screen w-full flex-col overflow-hidden font-[Poppins,sans-serif]">
@@ -60,14 +129,8 @@ export default function Index() {
 
       {sets && (
         <>
-          <div className="mt-24 h-[72px] w-full overflow-hidden">
-            <div className="qh-marquee-slow flex h-full w-max items-center gap-14 pr-14">
-              {bar1Items.map((sym, i) => (
-                <div key={`b1-${sym.id}-${i}`} className="h-8 w-8 shrink-0">
-                  <SymbolIcon symbol={sym} />
-                </div>
-              ))}
-            </div>
+          <div className="mt-24 h-[72px] w-full">
+            <SymbolMarquee symbols={sets.bar1Set} speed="slow" />
           </div>
 
           <div className="flex flex-1 flex-col items-center justify-center gap-9 py-6">
@@ -113,15 +176,19 @@ export default function Index() {
             </button>
           </div>
 
-          <div className="mb-8 h-[72px] w-full overflow-hidden">
-            <div className="qh-marquee-fast flex h-full w-max items-center gap-14 pr-14">
-              {bar2Items.map((sym, i) => (
-                <div key={`b2-${sym.id}-${i}`} className="h-8 w-8 shrink-0">
-                  <SymbolIcon symbol={sym} />
-                </div>
-              ))}
-            </div>
+          <div className="mb-3 h-[72px] w-full">
+            <SymbolMarquee symbols={sets.bar2Set} speed="fast" />
           </div>
+
+          <p className="mb-6 px-8 text-left text-sm text-[#4a5560]">
+            Suggestions and Support:{" "}
+            <a
+              href="mailto:contact.quiz@dragotoba.com"
+              className="font-medium text-[#2f5d76] no-underline hover:underline"
+            >
+              contact.quiz@dragotoba.com
+            </a>
+          </p>
         </>
       )}
     </main>

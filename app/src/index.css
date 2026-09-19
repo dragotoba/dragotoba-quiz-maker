@@ -37,10 +37,10 @@
 
 @keyframes qh-marquee {
   from {
-    transform: translateX(-50%);
+    transform: translateX(calc(-1 * var(--qh-marquee-shift, 0px)));
   }
   to {
-    transform: translateX(0%);
+    transform: translateX(0);
   }
 }
 
@@ -67,14 +67,18 @@
   animation: qh-spin-rev 42s linear infinite;
 }
 
+.qh-marquee-track {
+  display: flex;
+  width: max-content;
+  will-change: transform;
+}
+
 .qh-marquee-slow {
   animation: qh-marquee 34s linear infinite;
-  will-change: transform;
 }
 
 .qh-marquee-fast {
   animation: qh-marquee 30s linear infinite;
-  will-change: transform;
 }
 
 @media (max-width: 480px) {

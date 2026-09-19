@@ -66,12 +66,14 @@ function TagPills({
   tags: string[];
   singleLine?: boolean;
 }) {
-  if (tags.length === 0) return null;
+  if (tags.length === 0) {
+    return singleLine ? <div className="mt-2 h-6" aria-hidden /> : null;
+  }
   return (
     <div
       className={
         singleLine
-          ? "mt-2 flex max-h-6 flex-wrap gap-1.5 overflow-hidden"
+          ? "mt-2 flex h-6 max-h-6 flex-wrap gap-1.5 overflow-hidden"
           : "mt-2 flex flex-wrap gap-1.5"
       }
     >
@@ -585,9 +587,7 @@ export default function Community() {
                         </>
                       ) : null}
                     </div>
-                    {quizTags(quiz).length > 0 ? (
-                      <TagPills tags={quizTags(quiz)} singleLine />
-                    ) : null}
+                    <TagPills tags={quizTags(quiz)} singleLine />
                   </div>
                 </Link>
               </li>
