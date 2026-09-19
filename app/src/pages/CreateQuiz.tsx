@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, createContext, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
+  colorRgbToHex,
   evaluateConditions,
   findQuestionBox,
+  findVariable,
+  parseColorRgb,
   startQuiz,
   submitAnswer,
+  type ColorRgb,
   type QuizPlayScreen,
   type QuizQuestionScreen,
   type QuizResultsScreen,
@@ -107,9 +111,16 @@ type AnswerOption = {
   textColor: string;
 };
 
-type EffectOperation = "set" | "add" | "subtract" | "multiply" | "divide";
+type EffectOperation =
+  | "set"
+  | "add"
+  | "subtract"
+  | "multiply"
+  | "divide"
+  | "darken"
+  | "lighten";
 
-type VariableValue = number | string;
+type VariableValue = number | string | ColorRgb;
 
 type AnswerEffect = {
   id: string;
@@ -123,13 +134,13 @@ type AnswerEffect = {
   bulk?: boolean;
 };
 
-type VariableType = "number" | "bool" | "string";
+type VariableType = "number" | "bool" | "string" | "color";
 
 type ProjectVariable = {
   id: string;
   name: string;
   type: VariableType;
-  /** Float/bool(0|1)/string depending on type. */
+  /** Float/bool(0|1)/string/rgb depending on type. */
   value: VariableValue;
 };
 
@@ -152,11 +163,39 @@ const VARIABLE_TYPES: { value: VariableType; label: string }[] = [
   { value: "number", label: "number" },
   { value: "bool", label: "bool" },
   { value: "string", label: "string" },
+  { value: "color", label: "color" },
 ];
+
+const COLOR_VAR_PREFIX = "var:";
+const DEFAULT_COLOR_RGB: ColorRgb = [230, 230, 230];
+const ColorVariablesContext = createContext<ProjectVariable[]>([]);
+
+function useColorVariables(override?: ProjectVariable[]) {
+  const fromContext = useContext(ColorVariablesContext);
+  return override ?? fromContext;
+}
+
+function isColorVariableRef(raw: string) {
+  return raw.startsWith(COLOR_VAR_PREFIX);
+}
+
+function colorVariableRef(id: string) {
+  return `${COLOR_VAR_PREFIX}${id}`;
+}
+
+function colorVariableIdFromStored(raw: string): string | null {
+  if (!isColorVariableRef(raw)) return null;
+  const id = raw.slice(COLOR_VAR_PREFIX.length).trim();
+  return id || null;
+}
 
 function formatVariablePreviewValue(variable: ProjectVariable | undefined) {
   if (!variable) return "";
   if (variable.type === "bool") return variable.value ? "true" : "false";
+  if (variable.type === "color") {
+    const rgb = parseColorRgb(variable.value) ?? DEFAULT_COLOR_RGB;
+    return colorRgbToHex(rgb);
+  }
   return String(variable.value ?? "");
 }
 
@@ -276,6 +315,29 @@ function parseHexColor(raw: unknown, allowShort = true): string | null {
 }
 
 function normalizeStoredColor(raw: unknown, fallback: string): string {
+  if (typeof raw === "string") {
+    const varId = colorVariableIdFromStored(raw);
+    if (varId) return colorVariableRef(varId);
+  }
+  return parseHexColor(raw) ?? fallback;
+}
+
+function resolveStoredColor(
+  raw: string | undefined,
+  project: ProjectVariable[],
+  local: ProjectVariable[],
+  fallback: string,
+): string {
+  if (!raw) return fallback;
+  const varId = colorVariableIdFromStored(raw);
+  if (varId) {
+    const variable = findVariable(project, local, varId);
+    if (variable?.type === "color") {
+      const rgb = parseColorRgb(variable.value);
+      if (rgb) return colorRgbToHex(rgb);
+    }
+    return fallback;
+  }
   return parseHexColor(raw) ?? fallback;
 }
 
@@ -359,6 +421,9 @@ function hexToHsv(hex: string): { h: number; s: number; v: number } {
 }
 
 function coerceValueForType(type: VariableType, value: VariableValue): VariableValue {
+  if (type === "color") {
+    return parseColorRgb(value) ?? ([...DEFAULT_COLOR_RGB] as ColorRgb);
+  }
   if (type === "string") return typeof value === "string" ? value : String(value ?? "");
   if (type === "bool") {
     if (typeof value === "string") return value === "true" || value === "1" ? 1 : 0;
@@ -377,13 +442,63 @@ function isSetOnlyVariableType(type: VariableType | undefined) {
   return type === "bool" || type === "string";
 }
 
+function isComparisonOnlyVariableType(type: VariableType | undefined) {
+  return type === "bool" || type === "string" || type === "color";
+}
+
+function isColorAmountOperation(operation: EffectOperation) {
+  return operation === "darken" || operation === "lighten";
+}
+
+function colorEffectOperations(): { value: EffectOperation; label: string }[] {
+  return [
+    { value: "set", label: "set" },
+    { value: "darken", label: "darken" },
+    { value: "lighten", label: "lighten" },
+    { value: "add", label: "add" },
+    { value: "subtract", label: "subtract" },
+  ];
+}
+
+function defaultEffectOperation(variableType?: VariableType): EffectOperation {
+  if (isSetOnlyVariableType(variableType) || variableType === "color") return "set";
+  return "add";
+}
+
+function defaultEffectValue(variableType?: VariableType): VariableValue {
+  if (variableType === "color") return [...DEFAULT_COLOR_RGB] as ColorRgb;
+  if (variableType === "string") return "";
+  return 0;
+}
+
+function coerceEffectValueForOperation(
+  variableType: VariableType,
+  operation: EffectOperation,
+  value: VariableValue,
+): VariableValue {
+  if (variableType === "color") {
+    if (isColorAmountOperation(operation)) {
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      const n = Number(value);
+      return Number.isFinite(n) ? n : 20;
+    }
+    return parseColorRgb(value) ?? ([...DEFAULT_COLOR_RGB] as ColorRgb);
+  }
+  return coerceValueForType(variableType, value);
+}
+
 function normalizeProjectVariable(raw: unknown): ProjectVariable | null {
   if (!raw || typeof raw !== "object") return null;
   const v = raw as Record<string, unknown>;
   if (typeof v.id !== "string" || typeof v.name !== "string") return null;
 
   let type: VariableType = "number";
-  if (v.type === "bool" || v.type === "string" || v.type === "number") {
+  if (
+    v.type === "bool" ||
+    v.type === "string" ||
+    v.type === "number" ||
+    v.type === "color"
+  ) {
     type = v.type;
   } else if (v.isBool === true) {
     type = "bool";
@@ -1458,8 +1573,8 @@ function createDefaultEffect(
   return {
     id: crypto.randomUUID(),
     variableId,
-    operation: isSetOnlyVariableType(variableType) ? "set" : "add",
-    value: 0,
+    operation: defaultEffectOperation(variableType),
+    value: defaultEffectValue(variableType),
     ...(bulk ? { bulk: true } : {}),
   };
 }
@@ -1514,6 +1629,15 @@ function createDefaultCondition(
   };
 }
 
+function normalizeEffectValue(raw: unknown): VariableValue {
+  if (Array.isArray(raw)) {
+    return parseColorRgb(raw) ?? ([...DEFAULT_COLOR_RGB] as ColorRgb);
+  }
+  if (typeof raw === "string") return raw;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  return 0;
+}
+
 function normalizeConditions(raw: unknown): TransitionCondition[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -1522,12 +1646,7 @@ function normalizeConditions(raw: unknown): TransitionCondition[] {
       id: typeof c.id === "string" ? c.id : crypto.randomUUID(),
       variableId: typeof c.variableId === "string" ? c.variableId : "",
       operator: (typeof c.operator === "string" ? c.operator : "eq") as ConditionOperator,
-      value:
-        typeof c.value === "string"
-          ? c.value
-          : typeof c.value === "number" && Number.isFinite(c.value)
-            ? c.value
-            : 0,
+      value: normalizeEffectValue(c.value),
       valueVariableId:
         typeof c.valueVariableId === "string" && c.valueVariableId
           ? c.valueVariableId
@@ -1545,19 +1664,16 @@ function normalizeAnswerEffect(raw: unknown): AnswerEffect | null {
     effect.operation === "subtract" ||
     effect.operation === "multiply" ||
     effect.operation === "divide" ||
-    effect.operation === "set"
+    effect.operation === "set" ||
+    effect.operation === "darken" ||
+    effect.operation === "lighten"
       ? effect.operation
       : "add";
   return {
     id: effect.id,
     variableId: typeof effect.variableId === "string" ? effect.variableId : "",
     operation,
-    value:
-      typeof effect.value === "string"
-        ? effect.value
-        : typeof effect.value === "number" && Number.isFinite(effect.value)
-          ? effect.value
-          : 0,
+    value: normalizeEffectValue(effect.value),
     valueVariableId:
       typeof effect.valueVariableId === "string" && effect.valueVariableId
         ? effect.valueVariableId
@@ -1606,6 +1722,8 @@ function OperandEditor({
       (variable.type === varType ||
         (varType === "number" && variable.type === "bool")),
   );
+  const colorLiteral = parseColorRgb(value) ?? DEFAULT_COLOR_RGB;
+  const colorHex = colorRgbToHex(colorLiteral);
 
   return (
     <>
@@ -1673,6 +1791,23 @@ function OperandEditor({
           onChange={(e) => onChange({ value: e.target.value })}
           className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
         />
+      ) : varType === "color" ? (
+        <label className="flex min-w-0 flex-1 items-center gap-1.5">
+          <input
+            type="color"
+            value={colorHex}
+            aria-label={valueAriaLabel}
+            onFocus={onCheckpoint}
+            onChange={(e) => {
+              const rgb = parseColorRgb(e.target.value) ?? DEFAULT_COLOR_RGB;
+              onChange({ value: rgb });
+            }}
+            className="h-7 w-10 shrink-0 cursor-pointer rounded border border-black/15 bg-white p-0.5"
+          />
+          <span className="truncate font-mono text-[11px] text-black/60">
+            {colorLiteral.join(", ")}
+          </span>
+        </label>
       ) : (
         <DeferredNumberInput
           step="any"
@@ -1712,7 +1847,7 @@ function ConditionsEditor({
             (variable) => variable.id === condition.variableId,
           );
           const varType = selectedVar?.type ?? "number";
-          const comparisonOnly = isSetOnlyVariableType(varType);
+          const comparisonOnly = isComparisonOnlyVariableType(varType);
           const operatorOptions = comparisonOnly
             ? CONDITION_OPERATORS.filter((op) => op.value === "eq" || op.value === "neq")
             : CONDITION_OPERATORS;
@@ -1758,7 +1893,7 @@ function ConditionsEditor({
                       onUpdateCondition(condition.id, {
                         variableId,
                         operator:
-                          isSetOnlyVariableType(nextType) &&
+                          isComparisonOnlyVariableType(nextType) &&
                           condition.operator !== "eq" &&
                           condition.operator !== "neq"
                             ? "eq"
@@ -1870,7 +2005,20 @@ function EffectsEditor({
           const setOnly = isSetOnlyVariableType(varType);
           const operationOptions = setOnly
             ? EFFECT_OPERATIONS.filter((op) => op.value === "set")
-            : EFFECT_OPERATIONS;
+            : varType === "color"
+              ? colorEffectOperations()
+              : EFFECT_OPERATIONS;
+          const operandType: VariableType =
+            varType === "color" && isColorAmountOperation(effect.operation)
+              ? "number"
+              : varType;
+          const operationValue =
+            setOnly
+              ? "set"
+              : varType === "color" &&
+                  !colorEffectOperations().some((op) => op.value === effect.operation)
+                ? "set"
+                : effect.operation;
 
           return (
             <div
@@ -1888,13 +2036,11 @@ function EffectsEditor({
                     const variableId = e.target.value;
                     const nextVar = variables.find((v) => v.id === variableId);
                     const nextType = nextVar?.type ?? "number";
+                    const nextOperation = defaultEffectOperation(nextType);
                     onUpdateEffect(effect.id, {
                       variableId,
-                      operation:
-                        isSetOnlyVariableType(nextType) && effect.operation !== "set"
-                          ? "set"
-                          : effect.operation,
-                      value: coerceValueForType(nextType, effect.value),
+                      operation: nextOperation,
+                      value: defaultEffectValue(nextType),
                       valueVariableId: undefined,
                     });
                   }}
@@ -1924,14 +2070,21 @@ function EffectsEditor({
               <div className="flex items-center gap-1.5">
                 <select
                   aria-label="Effect operation"
-                  value={setOnly ? "set" : effect.operation}
+                  value={operationValue}
                   disabled={setOnly}
                   onFocus={onCheckpoint}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const operation = e.target.value as EffectOperation;
                     onUpdateEffect(effect.id, {
-                      operation: e.target.value as EffectOperation,
-                    })
-                  }
+                      operation,
+                      value: coerceEffectValueForOperation(
+                        varType,
+                        operation,
+                        effect.value,
+                      ),
+                      valueVariableId: undefined,
+                    });
+                  }}
                   className="min-w-0 w-20 shrink-0 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76] disabled:opacity-70"
                 >
                   {operationOptions.map((op) => (
@@ -1942,13 +2095,25 @@ function EffectsEditor({
                 </select>
 
                 <OperandEditor
-                  varType={varType}
-                  value={effect.value}
+                  varType={operandType}
+                  value={
+                    operandType === "color"
+                      ? coerceEffectValueForOperation(
+                          "color",
+                          operationValue,
+                          effect.value,
+                        )
+                      : operandType === "number"
+                        ? typeof effect.value === "number"
+                          ? effect.value
+                          : Number(effect.value) || 0
+                        : effect.value
+                  }
                   valueVariableId={effect.valueVariableId}
                   variables={variables}
                   excludeVariableId={effect.variableId}
                   valueAriaLabel="Effect amount"
-                  variableAriaLabel="Effect source variable"
+                  variableAriaLabel="Effect value variable"
                   onCheckpoint={onCheckpoint}
                   onChange={(patch) => onUpdateEffect(effect.id, patch)}
                 />
@@ -3073,6 +3238,7 @@ function ResultsColorPicker({
   onChange,
   compact = false,
   variant = "fill",
+  colorVariables: colorVariablesProp,
 }: {
   label: string;
   value: string;
@@ -3080,16 +3246,25 @@ function ResultsColorPicker({
   onChange: (color: string) => void;
   compact?: boolean;
   variant?: "fill" | "text";
+  colorVariables?: ProjectVariable[];
 }) {
-  const [hexDraft, setHexDraft] = useState(value);
+  const colorVariables = useColorVariables(colorVariablesProp);
+  const linkedVariableId = colorVariableIdFromStored(value);
+  const linkedVariable = linkedVariableId
+    ? colorVariables.find((variable) => variable.id === linkedVariableId)
+    : undefined;
+  const displayValue = linkedVariable
+    ? colorRgbToHex(parseColorRgb(linkedVariable.value) ?? DEFAULT_COLOR_RGB)
+    : (parseHexColor(value) ?? "#000000");
+  const [hexDraft, setHexDraft] = useState(displayValue);
   const [wheelOpen, setWheelOpen] = useState(false);
   const [wheelPos, setWheelPos] = useState({ top: 0, left: 0 });
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setHexDraft(value);
-  }, [value]);
+    setHexDraft(displayValue);
+  }, [displayValue]);
 
   useEffect(() => {
     if (!wheelOpen) return;
@@ -3099,7 +3274,9 @@ function ResultsColorPicker({
       const menuW = COLOR_WHEEL_SIZE + 24;
       const presetRows = Math.ceil(RESULTS_PRESET_COLORS.length / 8);
       const hexRow = compact ? 52 : 0;
-      const menuH = COLOR_WHEEL_SIZE + 24 + presetRows * 30 + 20 + hexRow;
+      const variableRow = colorVariables.length > 0 ? 44 : 0;
+      const menuH =
+        COLOR_WHEEL_SIZE + 24 + presetRows * 30 + 20 + hexRow + variableRow;
       let left = rect.right + 8;
       let top = rect.top;
       if (left + menuW > window.innerWidth - 8) left = rect.left - menuW - 8;
@@ -3132,10 +3309,10 @@ function ResultsColorPicker({
       window.removeEventListener("resize", placeMenu);
       window.removeEventListener("scroll", placeMenu, true);
     };
-  }, [wheelOpen, compact]);
+  }, [wheelOpen, compact, colorVariables.length]);
 
   function commitHex(raw: string) {
-    const next = parseHexColor(raw) ?? value;
+    const next = parseHexColor(raw) ?? displayValue;
     setHexDraft(next);
     if (next !== value) onChange(next);
   }
@@ -3146,6 +3323,7 @@ function ResultsColorPicker({
       value={hexDraft}
       spellCheck={false}
       placeholder="#rrggbb"
+      disabled={Boolean(linkedVariableId)}
       onFocus={() => onCheckpoint()}
       onChange={(e) => {
         const raw = e.target.value;
@@ -3154,7 +3332,7 @@ function ResultsColorPicker({
         if (parsed && parsed !== value) onChange(parsed);
       }}
       onBlur={() => commitHex(hexDraft)}
-      className={`w-full rounded-lg border border-black/15 bg-white font-mono text-sm text-black outline-none focus:border-[#2f5d76] ${
+      className={`w-full rounded-lg border border-black/15 bg-white font-mono text-sm text-black outline-none focus:border-[#2f5d76] disabled:opacity-60 ${
         compact ? "px-2 py-1.5" : "px-3 py-2"
       }`}
     />
@@ -3179,9 +3357,35 @@ function ResultsColorPicker({
           }}
           onPointerDown={(e) => e.stopPropagation()}
         >
+          {colorVariables.length > 0 ? (
+            <label className="mb-3 block text-xs font-medium text-black/70">
+              Variable
+              <select
+                aria-label={`${label} color variable`}
+                value={linkedVariableId ?? ""}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  if (!nextId) {
+                    onChange(displayValue);
+                    return;
+                  }
+                  onChange(colorVariableRef(nextId));
+                }}
+                className="mt-1 w-full rounded-md border border-black/15 bg-white px-2 py-1.5 text-sm text-black outline-none focus:border-[#2f5d76]"
+              >
+                <option value="">Custom color</option>
+                {colorVariables.map((variable) => (
+                  <option key={variable.id} value={variable.id}>
+                    {variable.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <div className="grid grid-cols-8 gap-1.5">
             {RESULTS_PRESET_COLORS.map((color) => {
-              const selected = value.toLowerCase() === color;
+              const selected =
+                !linkedVariableId && displayValue.toLowerCase() === color;
               return (
                 <button
                   key={color}
@@ -3200,7 +3404,10 @@ function ResultsColorPicker({
           </div>
           {compact && <div className="mt-3">{hexInput}</div>}
           <div className="mt-3">
-            <ResultsColorWheel value={value} onChange={onChange} />
+            <ResultsColorWheel
+              value={displayValue}
+              onChange={(color) => onChange(color)}
+            />
           </div>
         </div>,
         document.body,
@@ -3213,7 +3420,7 @@ function ResultsColorPicker({
         <button
           ref={buttonRef}
           type="button"
-          title={label}
+          title={linkedVariable ? `${label}: ${linkedVariable.name}` : label}
           aria-label={`Open ${label} color menu`}
           aria-haspopup="dialog"
           aria-expanded={wheelOpen}
@@ -3223,12 +3430,12 @@ function ResultsColorPicker({
               ? "flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-black/15 bg-[#c8c8c8] hover:bg-[#bcbcbc]"
               : "h-7 w-7 shrink-0 cursor-pointer rounded-md border border-black/20"
           }
-          style={variant === "fill" ? { backgroundColor: value } : undefined}
+          style={variant === "fill" ? { backgroundColor: displayValue } : undefined}
         >
           {variant === "text" ? (
             <span
               className="text-sm font-bold leading-none"
-              style={{ color: value }}
+              style={{ color: displayValue }}
               aria-hidden
             >
               A
@@ -3246,7 +3453,7 @@ function ResultsColorPicker({
       <div className="mt-1.5 flex items-center gap-2">
         <span
           className="h-9 w-9 shrink-0 rounded-md border border-black/20"
-          style={{ backgroundColor: value }}
+          style={{ backgroundColor: displayValue }}
           aria-hidden
         />
         {hexInput}
@@ -3269,6 +3476,11 @@ function ResultsColorPicker({
           />
         </button>
       </div>
+      {linkedVariable ? (
+        <p className="mt-1 text-xs text-black/55">
+          Linked to variable “{linkedVariable.name}”
+        </p>
+      ) : null}
       {menu}
     </div>
   );
@@ -4235,6 +4447,12 @@ type QuizUiDocument = {
   backButton: QuizUiRect;
   textBoxes: ResultsTextBox[];
   images: ResultsImage[];
+  /**
+   * Sections this quiz UI applies to.
+   * Project UI: empty means every section without a local override.
+   * Local UI: lists sections that share this layout (always includes its owner).
+   */
+  sectionIds: string[];
 };
 
 type QuizSection = {
@@ -4362,16 +4580,29 @@ function normalizeAnswers(raw: unknown): AnswerOption[] {
     .filter((answer): answer is AnswerOption => answer !== null);
 }
 
-function questionBoxPaint(color: string | undefined) {
-  const backgroundColor = normalizeStoredColor(color, QUESTION_BOX_COLOR_DEFAULT);
+function questionBoxPaint(
+  color: string | undefined,
+  resolve: (raw: string | undefined, fallback: string) => string = (raw, fallback) => {
+    if (typeof raw === "string" && colorVariableIdFromStored(raw)) return fallback;
+    return parseHexColor(raw) ?? fallback;
+  },
+) {
+  const backgroundColor = resolve(color, QUESTION_BOX_COLOR_DEFAULT);
   return { backgroundColor, color: contrastTextOn(backgroundColor) };
 }
 
-function answerBoxPaint(color: string | undefined, textColor?: string) {
-  const backgroundColor = normalizeStoredColor(color, ANSWER_BOX_COLOR_DEFAULT);
+function answerBoxPaint(
+  color: string | undefined,
+  textColor?: string,
+  resolve: (raw: string | undefined, fallback: string) => string = (raw, fallback) => {
+    if (typeof raw === "string" && colorVariableIdFromStored(raw)) return fallback;
+    return parseHexColor(raw) ?? fallback;
+  },
+) {
+  const backgroundColor = resolve(color, ANSWER_BOX_COLOR_DEFAULT);
   return {
     backgroundColor,
-    color: parseHexColor(textColor) ?? contrastTextOn(backgroundColor),
+    color: parseHexColor(resolve(textColor, "")) ?? contrastTextOn(backgroundColor),
   };
 }
 
@@ -4951,6 +5182,17 @@ function defaultQuizUiChromePosition(
   return stack.answers.find((answer) => answer.id === id) ?? null;
 }
 
+function normalizeQuizUiSectionIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const next: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string" || !item.trim()) continue;
+    if (next.includes(item)) continue;
+    next.push(item);
+  }
+  return next;
+}
+
 function emptyQuizUiDocument(
   pageWidth = 1280,
   pageHeight = 800,
@@ -4966,6 +5208,7 @@ function emptyQuizUiDocument(
     ...stack,
     textBoxes: [],
     images: [],
+    sectionIds: [],
   };
 }
 
@@ -5066,6 +5309,7 @@ function normalizeQuizUi(raw: unknown, pageWidth = 1280, pageHeight = 800): Quiz
           .map(normalizeResultsImage)
           .filter((item): item is ResultsImage => item !== null)
       : [],
+    sectionIds: normalizeQuizUiSectionIds(data.sectionIds),
   };
 }
 
@@ -5198,12 +5442,19 @@ function withQuizUiChromeFontDefaults(ui: QuizUiDocument): QuizUiDocument {
   };
 }
 
-function quizUiButtonPaint(rect: QuizUiRect, kind: "next" | "back") {
-  const backgroundColor = normalizeStoredColor(
+function quizUiButtonPaint(
+  rect: QuizUiRect,
+  kind: "next" | "back",
+  resolve: (raw: string | undefined, fallback: string) => string = (raw, fallback) => {
+    if (typeof raw === "string" && colorVariableIdFromStored(raw)) return fallback;
+    return parseHexColor(raw) ?? fallback;
+  },
+) {
+  const backgroundColor = resolve(
     rect.backgroundColor,
     kind === "next" ? QUIZ_UI_NEXT_BACKGROUND : QUIZ_UI_BACK_BACKGROUND,
   );
-  const color = normalizeStoredColor(
+  const color = resolve(
     rect.textColor,
     kind === "next" ? QUIZ_UI_NEXT_TEXT : QUIZ_UI_BACK_TEXT,
   );
@@ -6075,6 +6326,13 @@ export function CreateQuizEditor({
   const [localVariables, setLocalVariables] = useState<ProjectVariable[]>(
     initialSection.localVariables,
   );
+  const colorVariables = useMemo(
+    () =>
+      [...variables, ...localVariables].filter(
+        (variable) => variable.type === "color",
+      ),
+    [variables, localVariables],
+  );
   const [defaultAnswers, setDefaultAnswers] = useState<AnswerOption[]>(
     initialQuiz.defaultAnswers,
   );
@@ -6258,6 +6516,7 @@ export function CreateQuizEditor({
     editorView === "section" && selectedBox?.kind === "question" ? selectedBox : null;
   const defaultQuestionPaint = questionBoxPaint(
     resolvedDefaultQuestionColor(localDefaultQuestionColor, defaultQuestionColor),
+    (raw, fallback) => resolveStoredColor(raw, variables, localVariables, fallback),
   );
   const placeholderAnswers =
     localDefaultAnswers.length > 0 ? localDefaultAnswers : defaultAnswers;
@@ -6430,12 +6689,12 @@ export function CreateQuizEditor({
     updater: (prev: QuizUiDocument) => QuizUiDocument,
   ) {
     if (quizUiScopeRef.current === "section") {
-      setLocalQuizUi((prev) => {
-        const next = updater(prev ?? quizUiRef.current);
-        localQuizUiRef.current = next;
-        activeQuizUiRef.current = next;
-        return next;
-      });
+      const prev = localQuizUiRef.current ?? quizUiRef.current;
+      const next = updater(prev);
+      const sectionIds = next.sectionIds?.length
+        ? next.sectionIds
+        : [activeSectionIdRef.current];
+      applyLocalQuizUiToSections(next, sectionIds);
       return;
     }
     setQuizUi((prev) => {
@@ -6446,7 +6705,7 @@ export function CreateQuizEditor({
     });
   }
 
-  function cloneProjectQuizUiForSection(): QuizUiDocument {
+  function cloneProjectQuizUiForSection(sectionId = activeSectionIdRef.current): QuizUiDocument {
     const pageWidth = resultsBaseWidthRef.current;
     const viewportHeight = viewportRef.current?.clientHeight ?? 800;
     const count = maxQuestionAnswerCount([{ boxes: boxesRef.current }]);
@@ -6455,7 +6714,154 @@ export function CreateQuizEditor({
         resolvedQuizUi(quizUiRef.current, pageWidth, viewportHeight, count),
       ),
       customized: true,
+      sectionIds: [sectionId],
     };
+  }
+
+  function quizUiSectionList() {
+    return getSectionsWithActive().map((section) => ({
+      id: section.id,
+      name: section.name.trim() || "Untitled section",
+      hasLocal: Boolean(section.localQuizUi),
+    }));
+  }
+
+  function sectionUsesActiveQuizUi(sectionId: string) {
+    if (quizUiScopeRef.current === "project") {
+      if (sectionId === activeSectionIdRef.current) return !localQuizUiRef.current;
+      const section = sectionsRef.current.find((item) => item.id === sectionId);
+      return !section?.localQuizUi;
+    }
+    const activeIds =
+      localQuizUiRef.current?.sectionIds?.length
+        ? localQuizUiRef.current.sectionIds
+        : [activeSectionIdRef.current];
+    return activeIds.includes(sectionId);
+  }
+
+  function applyLocalQuizUiToSections(doc: QuizUiDocument, sectionIds: string[]) {
+    const uniqueIds = [...new Set(sectionIds.filter(Boolean))];
+    if (!uniqueIds.includes(activeSectionIdRef.current)) {
+      uniqueIds.push(activeSectionIdRef.current);
+    }
+    const shared: QuizUiDocument = {
+      ...doc,
+      sectionIds: uniqueIds,
+      customized: true,
+    };
+    localQuizUiRef.current = shared;
+    setLocalQuizUi(shared);
+    activeQuizUiRef.current = shared;
+    setSections((prev) =>
+      prev.map((section) => {
+        if (section.id === activeSectionIdRef.current) return section;
+        if (uniqueIds.includes(section.id)) {
+          return { ...section, localQuizUi: structuredClone(shared) };
+        }
+        if (
+          section.localQuizUi?.sectionIds?.includes(activeSectionIdRef.current)
+        ) {
+          return { ...section, localQuizUi: null };
+        }
+        return section;
+      }),
+    );
+  }
+
+  function setQuizUiAppliesToSection(sectionId: string, applies: boolean) {
+    if (quizUiScopeRef.current === "project") {
+      const currentlyApplies = sectionUsesActiveQuizUi(sectionId);
+      if (applies === currentlyApplies) return;
+      pushHistory();
+      if (applies) {
+        if (sectionId === activeSectionIdRef.current) {
+          localQuizUiRef.current = null;
+          setLocalQuizUi(null);
+        } else {
+          setSections((prev) =>
+            prev.map((section) =>
+              section.id === sectionId ? { ...section, localQuizUi: null } : section,
+            ),
+          );
+        }
+        setQuizUi((prev) => {
+          const nextIds = normalizeQuizUiSectionIds([
+            ...(prev.sectionIds ?? []),
+            sectionId,
+          ]);
+          const next = { ...prev, sectionIds: nextIds };
+          quizUiRef.current = next;
+          if (quizUiScopeRef.current === "project") activeQuizUiRef.current = next;
+          return next;
+        });
+        return;
+      }
+
+      const cloned = cloneProjectQuizUiForSection(sectionId);
+      if (sectionId === activeSectionIdRef.current) {
+        localQuizUiRef.current = cloned;
+        setLocalQuizUi(cloned);
+      } else {
+        setSections((prev) =>
+          prev.map((section) =>
+            section.id === sectionId ? { ...section, localQuizUi: cloned } : section,
+          ),
+        );
+      }
+      setQuizUi((prev) => {
+        const next = {
+          ...prev,
+          sectionIds: (prev.sectionIds ?? []).filter((id) => id !== sectionId),
+        };
+        quizUiRef.current = next;
+        if (quizUiScopeRef.current === "project") activeQuizUiRef.current = next;
+        return next;
+      });
+      return;
+    }
+
+    // Section-scoped quiz UI sharing
+    const current =
+      localQuizUiRef.current ?? cloneProjectQuizUiForSection(activeSectionIdRef.current);
+    const currentIds = current.sectionIds?.length
+      ? [...current.sectionIds]
+      : [activeSectionIdRef.current];
+    if (!currentIds.includes(activeSectionIdRef.current)) {
+      currentIds.push(activeSectionIdRef.current);
+    }
+    const already = currentIds.includes(sectionId);
+    if (applies === already) return;
+
+    if (!applies && sectionId === activeSectionIdRef.current) {
+      // Turning off the active section returns it to the project quiz UI.
+      pushHistory();
+      localQuizUiRef.current = null;
+      setLocalQuizUi(null);
+      setSections((prev) =>
+        prev.map((section) => {
+          if (section.id === activeSectionIdRef.current) return section;
+          if (currentIds.includes(section.id)) {
+            return { ...section, localQuizUi: null };
+          }
+          return section;
+        }),
+      );
+      quizUiScopeRef.current = "project";
+      setQuizUiScope("project");
+      activeQuizUiRef.current = quizUiRef.current;
+      setEditorView("section");
+      setSettingsPane("section");
+      setSelectedQuizUiId(null);
+      setSelectedQuizUiIds([]);
+      setQuizUiPreview(false);
+      return;
+    }
+
+    pushHistory();
+    const nextIds = applies
+      ? normalizeQuizUiSectionIds([...currentIds, sectionId])
+      : currentIds.filter((id) => id !== sectionId);
+    applyLocalQuizUiToSections(current, nextIds);
   }
 
   function getPersistedQuiz(): PersistedQuiz {
@@ -6640,15 +7046,27 @@ export function CreateQuizEditor({
     if (enabled === Boolean(localQuizUiRef.current)) return;
     pushHistory();
     if (enabled) {
-      const cloned = cloneProjectQuizUiForSection();
-      localQuizUiRef.current = cloned;
-      setLocalQuizUi(cloned);
+      const cloned = cloneProjectQuizUiForSection(activeSectionIdRef.current);
+      applyLocalQuizUiToSections(cloned, [activeSectionIdRef.current]);
       return;
     }
+    const sharedIds = localQuizUiRef.current?.sectionIds?.length
+      ? localQuizUiRef.current.sectionIds
+      : [activeSectionIdRef.current];
     localQuizUiRef.current = null;
     setLocalQuizUi(null);
+    setSections((prev) =>
+      prev.map((section) => {
+        if (section.id === activeSectionIdRef.current) return section;
+        if (sharedIds.includes(section.id)) {
+          return { ...section, localQuizUi: null };
+        }
+        return section;
+      }),
+    );
     quizUiScopeRef.current = "project";
     setQuizUiScope("project");
+    activeQuizUiRef.current = quizUiRef.current;
     if (editorViewRef.current === "quiz-ui") {
       setEditorView("section");
       setSettingsPane("section");
@@ -6662,9 +7080,8 @@ export function CreateQuizEditor({
     const nextScope = scope === "section" ? "section" : "project";
     if (nextScope === "section") {
       if (!localQuizUiRef.current) {
-        const cloned = cloneProjectQuizUiForSection();
-        localQuizUiRef.current = cloned;
-        setLocalQuizUi(cloned);
+        const cloned = cloneProjectQuizUiForSection(activeSectionIdRef.current);
+        applyLocalQuizUiToSections(cloned, [activeSectionIdRef.current]);
       }
     }
     const scopeChanged = quizUiScopeRef.current !== nextScope;
@@ -10462,6 +10879,16 @@ export function CreateQuizEditor({
       ? ((quizGraph ?? sections).find((section) => section.id === quizScreen.sectionId)
           ?.localQuizUi ?? quizUi)
       : editorQuizUi;
+  const playColorProject =
+    quizScreen?.kind === "question" || quizScreen?.kind === "results"
+      ? quizScreen.projectVariables
+      : variables;
+  const playColorLocal =
+    quizScreen?.kind === "question" || quizScreen?.kind === "results"
+      ? quizScreen.localVariables
+      : localVariables;
+  const resolvePlayColor = (raw: string | undefined, fallback: string) =>
+    resolveStoredColor(raw, playColorProject, playColorLocal, fallback);
   const quizUiPage = resolvedQuizUi(
     playQuizUi,
     resultsBaseWidth,
@@ -10617,6 +11044,15 @@ export function CreateQuizEditor({
   }
 
   return (
+    <ColorVariablesContext.Provider
+      value={
+        quizScreen
+          ? [...quizScreen.projectVariables, ...quizScreen.localVariables].filter(
+              (variable) => variable.type === "color",
+            )
+          : colorVariables
+      }
+    >
     <div className="relative h-screen w-full overflow-hidden bg-white">
       <div
         className="pointer-events-none absolute top-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2"
@@ -11502,7 +11938,12 @@ export function CreateQuizEditor({
           <div
             className="relative overflow-x-clip"
             style={{
-              backgroundColor: quizUiPage.backgroundColor,
+              backgroundColor: resolveStoredColor(
+                quizUiPage.backgroundColor,
+                variables,
+                localVariables,
+                QUIZ_UI_BACKGROUND_DEFAULT,
+              ),
               marginLeft: quizUiPreview ? 0 : resultsLeftInset,
               width: quizUiPreview ? resultsBaseWidth : resultsAvailableWidth,
               minHeight: "100%",
@@ -11512,7 +11953,12 @@ export function CreateQuizEditor({
             <div
               className="absolute top-0 left-0 origin-top-left"
               style={{
-                backgroundColor: quizUiPage.backgroundColor,
+                backgroundColor: resolveStoredColor(
+                  quizUiPage.backgroundColor,
+                  variables,
+                  localVariables,
+                  QUIZ_UI_BACKGROUND_DEFAULT,
+                ),
                 width: resultsBaseWidth,
                 height: quizUiPageHeight,
                 transform: layoutPaintTransform(
@@ -11563,10 +12009,12 @@ export function CreateQuizEditor({
                   selected={isQuizUiSelected(answer.id)}
                   preview={quizUiPreview}
                   className="flex items-center justify-center overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm"
-                  style={{
+              style={{
                     ...answerBoxPaint(
                       placeholderAnswers[index]?.color ?? defaultAnswerColor,
                       placeholderAnswers[index]?.textColor ?? defaultAnswerTextColor,
+                      (raw, fallback) =>
+                        resolveStoredColor(raw, variables, localVariables, fallback),
                     ),
                     fontSize: quizUiChromeFontSize(answer, "answer"),
                   }}
@@ -11587,7 +12035,12 @@ export function CreateQuizEditor({
                 selected={isQuizUiSelected(quizUiPage.nextButton.id)}
                 preview={quizUiPreview}
                 className="flex items-center justify-center overflow-hidden rounded-xl px-4 py-3 text-center font-medium opacity-40 shadow-sm"
-                style={quizUiButtonPaint(quizUiPage.nextButton, "next")}
+                style={quizUiButtonPaint(
+                  quizUiPage.nextButton,
+                  "next",
+                  (raw, fallback) =>
+                    resolveStoredColor(raw, variables, localVariables, fallback),
+                )}
                 onPointerDown={(e) =>
                   onQuizUiItemPointerDown(e, quizUiPage.nextButton.id)
                 }
@@ -11610,7 +12063,12 @@ export function CreateQuizEditor({
                 selected={isQuizUiSelected(quizUiPage.backButton.id)}
                 preview={quizUiPreview}
                 className="flex items-center justify-center overflow-hidden rounded-xl border border-black/15 px-4 py-3 text-center font-medium opacity-40 shadow-sm"
-                style={quizUiButtonPaint(quizUiPage.backButton, "back")}
+                style={quizUiButtonPaint(
+                  quizUiPage.backButton,
+                  "back",
+                  (raw, fallback) =>
+                    resolveStoredColor(raw, variables, localVariables, fallback),
+                )}
                 onPointerDown={(e) =>
                   onQuizUiItemPointerDown(e, quizUiPage.backButton.id)
                 }
@@ -11960,7 +12418,11 @@ export function CreateQuizEditor({
                     ? "bg-[#4f6bc4] text-white"
                     : "";
             const questionPaint =
-              box.kind === "question" ? questionBoxPaint(box.color) : null;
+              box.kind === "question"
+                ? questionBoxPaint(box.color, (raw, fallback) =>
+                    resolveStoredColor(raw, variables, localVariables, fallback),
+                  )
+                : null;
 
             return (
               <div
@@ -13868,6 +14330,22 @@ export function CreateQuizEditor({
                             }
                             className="w-20 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
                           />
+                        ) : variable.type === "color" ? (
+                          <input
+                            type="color"
+                            value={colorRgbToHex(
+                              parseColorRgb(variable.value) ?? DEFAULT_COLOR_RGB,
+                            )}
+                            aria-label="Color value"
+                            onFocus={() => pushHistory()}
+                            onChange={(e) =>
+                              updateVariable(variable.id, {
+                                value:
+                                  parseColorRgb(e.target.value) ?? DEFAULT_COLOR_RGB,
+                              })
+                            }
+                            className="h-7 w-10 shrink-0 cursor-pointer rounded border border-black/15 bg-white p-0.5"
+                          />
                         ) : (
                           <DeferredNumberInput
                             step="any"
@@ -14007,15 +14485,49 @@ export function CreateQuizEditor({
                 onShowPreview={enterResultsPreview}
               />
             ) : showQuizUiSettings ? (
-              <LayoutPageSettings
-                backgroundColor={quizUiPage.backgroundColor}
-                gridVisible={quizUiPage.gridVisible}
-                horizontalTicks={quizUiPage.horizontalTicks}
-                verticalTicks={quizUiPage.verticalTicks}
-                onCheckpoint={pushHistory}
-                onPatch={updateQuizUiSettings}
-                onShowPreview={enterQuizUiPreview}
-              />
+              <>
+                <LayoutPageSettings
+                  backgroundColor={quizUiPage.backgroundColor}
+                  gridVisible={quizUiPage.gridVisible}
+                  horizontalTicks={quizUiPage.horizontalTicks}
+                  verticalTicks={quizUiPage.verticalTicks}
+                  onCheckpoint={pushHistory}
+                  onPatch={updateQuizUiSettings}
+                  onShowPreview={enterQuizUiPreview}
+                />
+                <section className="mt-8">
+                  <h2 className="text-sm font-semibold tracking-wide text-black/70 uppercase">
+                    Applies to sections
+                  </h2>
+                  <p className="mt-1 text-xs text-black/55">
+                    {quizUiScope === "section"
+                      ? "Checked sections share this quiz UI."
+                      : "Checked sections use this quiz UI. Uncheck to give a section its own."}
+                  </p>
+                  <div className="mt-3 flex flex-col gap-2">
+                    {quizUiSectionList().map((section) => {
+                      const checked = sectionUsesActiveQuizUi(section.id);
+                      return (
+                        <label
+                          key={section.id}
+                          className="flex cursor-pointer items-center gap-2 rounded-md border border-black/10 bg-white px-2 py-1.5 text-sm text-black"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            aria-label={`Apply quiz UI to ${section.name}`}
+                            onChange={(e) =>
+                              setQuizUiAppliesToSection(section.id, e.target.checked)
+                            }
+                            className="h-4 w-4 cursor-pointer"
+                          />
+                          <span className="min-w-0 truncate">{section.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </section>
+              </>
             ) : (
               <>
                 <section className="mt-6">
@@ -14109,6 +14621,22 @@ export function CreateQuizEditor({
                               updateLocalVariable(variable.id, { value: e.target.value })
                             }
                             className="w-20 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
+                          />
+                        ) : variable.type === "color" ? (
+                          <input
+                            type="color"
+                            value={colorRgbToHex(
+                              parseColorRgb(variable.value) ?? DEFAULT_COLOR_RGB,
+                            )}
+                            aria-label="Local color value"
+                            onFocus={() => pushHistory()}
+                            onChange={(e) =>
+                              updateLocalVariable(variable.id, {
+                                value:
+                                  parseColorRgb(e.target.value) ?? DEFAULT_COLOR_RGB,
+                              })
+                            }
+                            className="h-7 w-10 shrink-0 cursor-pointer rounded border border-black/15 bg-white p-0.5"
                           />
                         ) : (
                           <DeferredNumberInput
@@ -14265,7 +14793,12 @@ export function CreateQuizEditor({
       {quizScreen?.kind === "question" && quizQuestionBox && (
         <div
           className="absolute inset-0 z-[60] overflow-x-clip overflow-y-auto overscroll-x-none"
-          style={{ backgroundColor: quizUiPage.backgroundColor }}
+          style={{
+            backgroundColor: resolvePlayColor(
+              quizUiPage.backgroundColor,
+              QUIZ_UI_BACKGROUND_DEFAULT,
+            ),
+          }}
         >
           <div
             className="relative overflow-x-clip"
@@ -14292,7 +14825,7 @@ export function CreateQuizEditor({
                 top: quizUiPage.question.y,
                 width: quizUiPage.question.width,
                 height: quizUiPage.question.height,
-                ...questionBoxPaint(quizQuestionBox.color),
+                ...questionBoxPaint(quizQuestionBox.color, resolvePlayColor),
                 fontSize: quizUiChromeFontSize(
                   quizUiPage.question,
                   "question",
@@ -14327,7 +14860,11 @@ export function CreateQuizEditor({
                     top: rect.y,
                     width: rect.width,
                     height: rect.height,
-                    ...answerBoxPaint(answer.color, answer.textColor),
+                    ...answerBoxPaint(
+                      answer.color,
+                      answer.textColor,
+                      resolvePlayColor,
+                    ),
                     fontSize: quizUiChromeFontSize(rect, "answer"),
                   }}
                 >
@@ -14346,7 +14883,11 @@ export function CreateQuizEditor({
                   top: quizPlayLayout.nextButton.y,
                   width: quizPlayLayout.nextButton.width,
                   height: quizPlayLayout.nextButton.height,
-                  ...quizUiButtonPaint(quizPlayLayout.nextButton, "next"),
+                  ...quizUiButtonPaint(
+                    quizPlayLayout.nextButton,
+                    "next",
+                    resolvePlayColor,
+                  ),
                 }}
               >
                 Next
@@ -14363,7 +14904,11 @@ export function CreateQuizEditor({
                 top: quizPlayLayout.backButton.y,
                 width: quizPlayLayout.backButton.width,
                 height: quizPlayLayout.backButton.height,
-                ...quizUiButtonPaint(quizPlayLayout.backButton, "back"),
+                ...quizUiButtonPaint(
+                  quizPlayLayout.backButton,
+                  "back",
+                  resolvePlayColor,
+                ),
               }}
             >
               Back
@@ -14451,5 +14996,6 @@ export function CreateQuizEditor({
         </div>
       )}
     </div>
+    </ColorVariablesContext.Provider>
   );
 }

@@ -1,5 +1,8 @@
 import { authHeaders, getToken } from "./auth";
-import type { ProjectVariable } from "./quizEngine";
+import {
+  parseColorRgb,
+  type ProjectVariable,
+} from "./quizEngine";
 
 export const DEFAULT_PROJECT_NAME = "Untitled Quiz";
 /** Default cover / favicon when a quiz has no front image. */
@@ -680,17 +683,24 @@ function asSavedVariable(raw: unknown): ProjectVariable | null {
   const data = raw as Record<string, unknown>;
   if (typeof data.id !== "string" || typeof data.name !== "string") return null;
   const type =
-    data.type === "bool" || data.type === "string" || data.type === "number"
+    data.type === "bool" ||
+    data.type === "string" ||
+    data.type === "number" ||
+    data.type === "color"
       ? data.type
       : "number";
   let value: ProjectVariable["value"] = 0;
-  if (type === "string") {
+  if (type === "color") {
+    value = parseColorRgb(data.value) ?? [0, 0, 0];
+  } else if (type === "string") {
     value = typeof data.value === "string" ? data.value : "";
   } else if (typeof data.value === "number" && Number.isFinite(data.value)) {
     value = data.value;
   } else if (typeof data.value === "string") {
     const n = Number(data.value);
     value = Number.isFinite(n) ? n : 0;
+  } else if (type === "bool") {
+    value = data.value ? 1 : 0;
   }
   return { id: data.id, name: data.name, type, value };
 }

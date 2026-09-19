@@ -1,9 +1,17 @@
 export const QUIZ_RESULTS_ID = "__results__";
 export const MAX_QUIZ_HOPS = 256;
 
-export type VariableType = "number" | "bool" | "string";
-export type VariableValue = number | string;
-export type EffectOperation = "set" | "add" | "subtract" | "multiply" | "divide";
+export type ColorRgb = [number, number, number];
+export type VariableType = "number" | "bool" | "string" | "color";
+export type VariableValue = number | string | ColorRgb;
+export type EffectOperation =
+  | "set"
+  | "add"
+  | "subtract"
+  | "multiply"
+  | "divide"
+  | "darken"
+  | "lighten";
 export type ConditionOperator = "eq" | "neq" | "gt" | "lt" | "gte" | "lte";
 export type ConditionJoin = "and" | "or";
 
@@ -90,8 +98,62 @@ export type QuizPlayScreen = QuizQuestionScreen | QuizResultsScreen;
 
 type HopState = { n: number };
 
+function clampByte(n: number) {
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(255, Math.max(0, Math.round(n)));
+}
+
+export function parseColorRgb(raw: unknown): ColorRgb | null {
+  if (Array.isArray(raw) && raw.length >= 3) {
+    const r = Number(raw[0]);
+    const g = Number(raw[1]);
+    const b = Number(raw[2]);
+    if (![r, g, b].every((channel) => Number.isFinite(channel))) return null;
+    return [clampByte(r), clampByte(g), clampByte(b)];
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) {
+      return [
+        parseInt(trimmed.slice(1, 3), 16),
+        parseInt(trimmed.slice(3, 5), 16),
+        parseInt(trimmed.slice(5, 7), 16),
+      ];
+    }
+    if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+      return [
+        parseInt(trimmed[1] + trimmed[1], 16),
+        parseInt(trimmed[2] + trimmed[2], 16),
+        parseInt(trimmed[3] + trimmed[3], 16),
+      ];
+    }
+    const parts = trimmed.split(",").map((part) => Number(part.trim()));
+    if (
+      parts.length >= 3 &&
+      parts.slice(0, 3).every((channel) => Number.isFinite(channel))
+    ) {
+      return [clampByte(parts[0]), clampByte(parts[1]), clampByte(parts[2])];
+    }
+  }
+  return null;
+}
+
+export function colorRgbToHex(rgb: ColorRgb): string {
+  const to = (n: number) => clampByte(n).toString(16).padStart(2, "0");
+  return `#${to(rgb[0])}${to(rgb[1])}${to(rgb[2])}`;
+}
+
+export function colorsEqual(a: ColorRgb, b: ColorRgb) {
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+
 export function cloneVariables(vars: ProjectVariable[]): ProjectVariable[] {
-  return vars.map((variable) => ({ ...variable }));
+  return vars.map((variable) => ({
+    ...variable,
+    value: Array.isArray(variable.value)
+      ? ([...variable.value] as ColorRgb)
+      : variable.value,
+  }));
 }
 
 function cloneTieBreaks(tieBreaks: TieBreaks): TieBreaks {
@@ -129,6 +191,9 @@ function questionScreen(
 }
 
 function coerceValue(type: VariableType, value: VariableValue): VariableValue {
+  if (type === "color") {
+    return parseColorRgb(value) ?? ([0, 0, 0] as ColorRgb);
+  }
   if (type === "string") return typeof value === "string" ? value : String(value ?? "");
   if (type === "bool") {
     if (typeof value === "string") return value === "true" || value === "1" ? 1 : 0;
@@ -141,11 +206,12 @@ function coerceValue(type: VariableType, value: VariableValue): VariableValue {
 
 function numericOf(variable: ProjectVariable): number {
   if (variable.type === "bool") return variable.value ? 1 : 0;
+  if (variable.type === "color") return 0;
   const n = Number(variable.value);
   return Number.isFinite(n) ? n : 0;
 }
 
-function findVariable(
+export function findVariable(
   project: ProjectVariable[],
   local: ProjectVariable[],
   id: string,
@@ -164,6 +230,29 @@ function resolveOperandValue(
   return source ? source.value : value;
 }
 
+function resolveColorOperand(
+  project: ProjectVariable[],
+  local: ProjectVariable[],
+  value: VariableValue,
+  valueVariableId: string | undefined,
+): ColorRgb {
+  const raw = resolveOperandValue(project, local, value, valueVariableId);
+  return parseColorRgb(raw) ?? ([0, 0, 0] as ColorRgb);
+}
+
+function resolveNumberOperand(
+  project: ProjectVariable[],
+  local: ProjectVariable[],
+  value: VariableValue,
+  valueVariableId: string | undefined,
+): number {
+  const raw = resolveOperandValue(project, local, value, valueVariableId);
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (Array.isArray(raw)) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export function applyEffects(
   project: ProjectVariable[],
   local: ProjectVariable[],
@@ -173,6 +262,76 @@ export function applyEffects(
   for (const effect of effects) {
     const variable = findVariable(project, local, effect.variableId);
     if (!variable) continue;
+
+    if (variable.type === "color") {
+      const current = parseColorRgb(variable.value) ?? ([0, 0, 0] as ColorRgb);
+      if (effect.operation === "set") {
+        variable.value = resolveColorOperand(
+          project,
+          local,
+          effect.value,
+          effect.valueVariableId,
+        );
+        continue;
+      }
+      if (effect.operation === "darken") {
+        const n = resolveNumberOperand(
+          project,
+          local,
+          effect.value,
+          effect.valueVariableId,
+        );
+        variable.value = [
+          clampByte(current[0] - n),
+          clampByte(current[1] - n),
+          clampByte(current[2] - n),
+        ];
+        continue;
+      }
+      if (effect.operation === "lighten") {
+        const n = resolveNumberOperand(
+          project,
+          local,
+          effect.value,
+          effect.valueVariableId,
+        );
+        variable.value = [
+          clampByte(current[0] + n),
+          clampByte(current[1] + n),
+          clampByte(current[2] + n),
+        ];
+        continue;
+      }
+      if (effect.operation === "add") {
+        const rhs = resolveColorOperand(
+          project,
+          local,
+          effect.value,
+          effect.valueVariableId,
+        );
+        variable.value = [
+          clampByte(current[0] + rhs[0]),
+          clampByte(current[1] + rhs[1]),
+          clampByte(current[2] + rhs[2]),
+        ];
+        continue;
+      }
+      if (effect.operation === "subtract") {
+        const rhs = resolveColorOperand(
+          project,
+          local,
+          effect.value,
+          effect.valueVariableId,
+        );
+        variable.value = [
+          clampByte(current[0] - rhs[0]),
+          clampByte(current[1] - rhs[1]),
+          clampByte(current[2] - rhs[2]),
+        ];
+      }
+      continue;
+    }
+
     const raw = resolveOperandValue(
       project,
       local,
@@ -219,6 +378,15 @@ function compareValues(
   operator: ConditionOperator,
   raw: VariableValue,
 ): boolean {
+  if (variable.type === "color") {
+    const left = parseColorRgb(variable.value) ?? ([0, 0, 0] as ColorRgb);
+    const right = parseColorRgb(raw) ?? ([0, 0, 0] as ColorRgb);
+    const equal = colorsEqual(left, right);
+    if (operator === "eq") return equal;
+    if (operator === "neq") return !equal;
+    return false;
+  }
+
   if (variable.type === "string") {
     const left = String(variable.value ?? "");
     const right = String(raw ?? "");
