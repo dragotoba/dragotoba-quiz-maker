@@ -28,6 +28,7 @@ export type CommunityQuizSummary = {
   publishedAt: number;
   author: string;
   categories?: string[];
+  tags?: string[];
   remixedFrom?: { id: string; author: string } | null;
 };
 
@@ -41,6 +42,7 @@ export type QuizListing = {
   coverImage: string;
   unlisted: boolean;
   categories: string[];
+  tags: string[];
   remixedFrom?: RemixedFrom;
 };
 
@@ -61,6 +63,8 @@ export type QuizCategory = (typeof QUIZ_CATEGORIES)[number];
 const QUIZ_CATEGORY_SET = new Set<string>(QUIZ_CATEGORIES);
 const LISTING_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MAX_TAG_LENGTH = 40;
+const MAX_TAGS = 30;
 
 export function normalizeCategories(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -74,6 +78,33 @@ export function normalizeCategories(raw: unknown): string[] {
   return next;
 }
 
+/** Normalize a single tag fragment (no leading #). Empty if invalid. */
+export function normalizeTagToken(raw: string): string {
+  let tag = raw.trim();
+  while (tag.startsWith("#")) tag = tag.slice(1).trim();
+  tag = tag.replace(/\s+/g, " ");
+  if (!tag) return "";
+  if (tag.length > MAX_TAG_LENGTH) tag = tag.slice(0, MAX_TAG_LENGTH);
+  return tag;
+}
+
+export function normalizeTags(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const next: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const tag = normalizeTagToken(item);
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(tag);
+    if (next.length >= MAX_TAGS) break;
+  }
+  return next;
+}
+
 export function normalizeRemixedFrom(raw: unknown): RemixedFrom | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const data = raw as Record<string, unknown>;
@@ -83,7 +114,13 @@ export function normalizeRemixedFrom(raw: unknown): RemixedFrom | undefined {
 }
 
 export function emptyListing(): QuizListing {
-  return { description: "", coverImage: "", unlisted: false, categories: [] };
+  return {
+    description: "",
+    coverImage: "",
+    unlisted: false,
+    categories: [],
+    tags: [],
+  };
 }
 
 export function normalizeListing(raw: unknown): QuizListing {
@@ -95,6 +132,7 @@ export function normalizeListing(raw: unknown): QuizListing {
     coverImage: typeof data.coverImage === "string" ? data.coverImage : "",
     unlisted: data.unlisted === true,
     categories: normalizeCategories(data.categories),
+    tags: normalizeTags(data.tags),
     ...(remixedFrom ? { remixedFrom } : {}),
   };
 }

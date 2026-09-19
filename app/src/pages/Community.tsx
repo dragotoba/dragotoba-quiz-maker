@@ -37,6 +37,38 @@ function quizCategories(quiz: CommunityQuizSummary) {
   return Array.isArray(quiz.categories) ? quiz.categories : [];
 }
 
+function quizTags(quiz: CommunityQuizSummary) {
+  return Array.isArray(quiz.tags) ? quiz.tags : [];
+}
+
+function TagPills({
+  tags,
+  singleLine = false,
+}: {
+  tags: string[];
+  singleLine?: boolean;
+}) {
+  if (tags.length === 0) return null;
+  return (
+    <div
+      className={
+        singleLine
+          ? "mt-2 flex max-h-6 flex-wrap gap-1.5 overflow-hidden"
+          : "mt-2 flex flex-wrap gap-1.5"
+      }
+    >
+      {tags.map((tag) => (
+        <span
+          key={tag}
+          className="rounded-full border border-[#2f5d76]/20 bg-[#2f5d76]/8 px-2 py-0.5 text-[11px] leading-4 text-[#2f5d76]"
+        >
+          #{tag}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function matchesCategoryFilter(
   quiz: CommunityQuizSummary,
   selected: Set<string>,
@@ -535,6 +567,9 @@ export default function Community() {
                         </>
                       ) : null}
                     </div>
+                    {quizTags(quiz).length > 0 ? (
+                      <TagPills tags={quizTags(quiz)} singleLine />
+                    ) : null}
                   </div>
                 </Link>
               </li>
@@ -658,6 +693,9 @@ export default function Community() {
                     <p className="mt-2 text-xs font-medium text-[#7a3b3b]" role="alert">
                       {adminCategoryError}
                     </p>
+                  ) : null}
+                  {quizTags(selected).length > 0 ? (
+                    <TagPills tags={quizTags(selected)} />
                   ) : null}
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
