@@ -52,6 +52,18 @@ function normalizeRemixedFrom(raw) {
   return { id, author };
 }
 
+/** Public-facing author label: display name, never username unless display name is empty. */
+function publicAuthorName(row) {
+  const display =
+    typeof row.display_name === "string" ? row.display_name.trim() : "";
+  if (display) return display.slice(0, 64);
+  const username = typeof row.username === "string" ? row.username.trim() : "";
+  return username.slice(0, 64);
+}
+
+const AUTHOR_SELECT = `COALESCE(NULLIF(TRIM(u.display_name), ''), u.username) AS author_name`;
+const REMIX_AUTHOR_SELECT = `COALESCE(NULLIF(TRIM(ru.display_name), ''), ru.username, NULLIF(TRIM(p.remixed_from_author), ''), '') AS remixed_author_name`;
+
 function normalizeListing(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return {
@@ -167,7 +179,7 @@ function rowToCommunity(row) {
     coverImage: row.cover_image ?? "",
     likes: Number(row.like_count) || 0,
     publishedAt: Number(row.published_at_ms),
-    author: row.username ?? "",
+    author: row.author_name ?? publicAuthorName(row),
     liked: Boolean(row.liked),
     categories: Array.isArray(row.categories) ? row.categories : [],
     remixedFrom:
@@ -175,9 +187,11 @@ function rowToCommunity(row) {
         ? {
             id: row.remixed_from_id,
             author:
-              typeof row.remixed_from_author === "string"
-                ? row.remixed_from_author
-                : "",
+              typeof row.remixed_author_name === "string" && row.remixed_author_name
+                ? row.remixed_author_name
+                : typeof row.remixed_from_author === "string"
+                  ? row.remixed_from_author
+                  : "",
           }
         : null,
   };
@@ -208,7 +222,9 @@ const COMMUNITY_SORTS = new Set(["trending", "liked", "recent"]);
 
 function communityFromSql(sort) {
   const base = `FROM published_quizzes p
-         JOIN users u ON u.id = p.user_id`;
+         JOIN users u ON u.id = p.user_id
+         LEFT JOIN published_quizzes rp ON rp.id = p.remixed_from_id
+         LEFT JOIN users ru ON ru.id = rp.user_id`;
   if (sort !== "trending") return base;
   return `${base}
          LEFT JOIN LATERAL (
@@ -495,7 +511,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
     try {
       const result = await pool.query(
         `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories,
-                p.remixed_from_id, p.remixed_from_author, u.username,
+                p.remixed_from_id, p.remixed_from_author, ${AUTHOR_SELECT}, ${REMIX_AUTHOR_SELECT},
                 (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms,
                 EXISTS(
                   SELECT 1 FROM published_quiz_likes l
@@ -547,7 +563,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
     try {
       const result = await pool.query(
         `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories,
-                p.remixed_from_id, p.remixed_from_author, u.username,
+                p.remixed_from_id, p.remixed_from_author, ${AUTHOR_SELECT}, ${REMIX_AUTHOR_SELECT},
                 (EXTRACT(EPOCH FROM p.published_at) * 1000)::bigint AS published_at_ms,
                 EXISTS(
                   SELECT 1 FROM published_quiz_likes l
@@ -555,6 +571,8 @@ export function registerQuizRoutes(app, pool, requireUser) {
                 ) AS liked
          FROM published_quizzes p
          JOIN users u ON u.id = p.user_id
+         LEFT JOIN published_quizzes rp ON rp.id = p.remixed_from_id
+         LEFT JOIN users ru ON ru.id = rp.user_id
          WHERE p.id = $1`,
         [req.params.id, userId],
       );
@@ -629,9 +647,22 @@ export function registerQuizRoutes(app, pool, requireUser) {
         return;
       }
 
-      const author = await pool.query(`SELECT username FROM users WHERE id = $1 LIMIT 1`, [
-        next.user_id,
-      ]);
+      const author = await pool.query(
+        `SELECT display_name, username FROM users WHERE id = $1 LIMIT 1`,
+        [next.user_id],
+      );
+      let remixedAuthorName = "";
+      if (next.remixed_from_id) {
+        const remixAuthor = await pool.query(
+          `SELECT u.display_name, u.username
+           FROM published_quizzes p
+           JOIN users u ON u.id = p.user_id
+           WHERE p.id = $1
+           LIMIT 1`,
+          [next.remixed_from_id],
+        );
+        remixedAuthorName = publicAuthorName(remixAuthor.rows[0] ?? {});
+      }
       const liked = await pool.query(
         `SELECT 1 FROM published_quiz_likes WHERE quiz_id = $1 AND user_id = $2 LIMIT 1`,
         [req.params.id, req.userId],
@@ -641,7 +672,8 @@ export function registerQuizRoutes(app, pool, requireUser) {
       res.json({
         quiz: rowToCommunity({
           ...next,
-          username: author.rows[0]?.username ?? "",
+          author_name: publicAuthorName(author.rows[0] ?? {}),
+          remixed_author_name: remixedAuthorName || next.remixed_from_author || "",
           liked: liked.rowCount > 0,
         }),
       });
@@ -658,7 +690,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
     }
     try {
       const source = await pool.query(
-        `SELECT p.document, p.project_name, u.username
+        `SELECT p.document, p.project_name, u.display_name, u.username
          FROM published_quizzes p
          JOIN users u ON u.id = p.user_id
          WHERE p.id = $1`,
@@ -673,7 +705,7 @@ export function registerQuizRoutes(app, pool, requireUser) {
       const newId = crypto.randomUUID();
       const remixedFrom = {
         id: req.params.id,
-        author: typeof row.username === "string" ? row.username.trim().slice(0, 64) : "",
+        author: publicAuthorName(row),
       };
       const sourceListing = normalizeListing(
         row.document && typeof row.document === "object" ? row.document.listing : null,
