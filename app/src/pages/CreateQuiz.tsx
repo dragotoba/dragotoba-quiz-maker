@@ -168,11 +168,24 @@ const VARIABLE_TYPES: { value: VariableType; label: string }[] = [
 
 const COLOR_VAR_PREFIX = "var:";
 const DEFAULT_COLOR_RGB: ColorRgb = [230, 230, 230];
-const ColorVariablesContext = createContext<ProjectVariable[]>([]);
+
+type ColorVariablesContextValue = {
+  colorVariables: ProjectVariable[];
+  setColorVariableValue: ((id: string, hex: string) => void) | null;
+};
+
+const ColorVariablesContext = createContext<ColorVariablesContextValue>({
+  colorVariables: [],
+  setColorVariableValue: null,
+});
 
 function useColorVariables(override?: ProjectVariable[]) {
   const fromContext = useContext(ColorVariablesContext);
-  return override ?? fromContext;
+  return override ?? fromContext.colorVariables;
+}
+
+function useSetColorVariableValue() {
+  return useContext(ColorVariablesContext).setColorVariableValue;
 }
 
 function isColorVariableRef(raw: string) {
@@ -2528,23 +2541,42 @@ function DeferredNumberInput({
 }) {
   const [draft, setDraft] = useState(String(value));
   const focusedRef = useRef(false);
+  const draftRef = useRef(draft);
   const valueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  const normalizeRef = useRef(normalize);
+  draftRef.current = draft;
   valueRef.current = value;
+  onChangeRef.current = onChange;
+  normalizeRef.current = normalize;
 
   useEffect(() => {
     if (!focusedRef.current) setDraft(String(value));
   }, [value]);
 
-  function commit(raw: string) {
+  function applyParsed(parsed: number, rewriteDraft: boolean) {
+    const next = normalizeRef.current ? normalizeRef.current(parsed) : parsed;
+    if (rewriteDraft) setDraft(String(next));
+    if (next !== valueRef.current) onChangeRef.current(next);
+  }
+
+  function commit(raw: string, rewriteDraft: boolean) {
     const parsed = parseDeferredNumber(raw);
     if (parsed === null) {
-      setDraft(String(valueRef.current));
+      if (rewriteDraft) setDraft(String(valueRef.current));
       return;
     }
-    const next = normalize ? normalize(parsed) : parsed;
-    setDraft(String(next));
-    if (next !== valueRef.current) onChange(next);
+    applyParsed(parsed, rewriteDraft);
   }
+
+  useEffect(() => {
+    return () => {
+      const parsed = parseDeferredNumber(draftRef.current);
+      if (parsed === null) return;
+      const next = normalizeRef.current ? normalizeRef.current(parsed) : parsed;
+      if (next !== valueRef.current) onChangeRef.current(next);
+    };
+  }, []);
 
   return (
     <input
@@ -2558,10 +2590,14 @@ function DeferredNumberInput({
         focusedRef.current = true;
         onCheckpoint?.();
       }}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setDraft(raw);
+        commit(raw, false);
+      }}
       onBlur={(e) => {
         focusedRef.current = false;
-        commit(e.target.value);
+        commit(e.target.value, true);
       }}
       onKeyDown={(e) => {
         if (e.key !== "Enter") return;
@@ -3094,23 +3130,38 @@ function ResultsColorWheel({
   value: string;
   onChange: (color: string) => void;
 }) {
+  const [hsv, setHsv] = useState(() => hexToHsv(value));
   const rootRef = useRef<HTMLDivElement>(null);
   const modeRef = useRef<"hue" | "sv" | null>(null);
-  const hsvRef = useRef(hexToHsv(value));
-  const lastEmittedRef = useRef(value.toLowerCase());
+  const draggingRef = useRef(false);
+  const hsvRef = useRef(hsv);
+  const valueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  hsvRef.current = hsv;
+  valueRef.current = value;
 
-  if (modeRef.current === null) {
-    const incoming = value.toLowerCase();
-    if (incoming !== lastEmittedRef.current) {
-      const parsed = hexToHsv(incoming);
-      if (parsed.s > 0.01) hsvRef.current.h = parsed.h;
-      hsvRef.current.s = parsed.s;
-      hsvRef.current.v = parsed.v;
-      lastEmittedRef.current = incoming;
-    }
-  }
-  const { h, s, v } = hsvRef.current;
+  useEffect(() => {
+    if (draggingRef.current) return;
+    const parsed = hexToHsv(value.toLowerCase());
+    setHsv((prev) => ({
+      h: parsed.s > 0.01 ? parsed.h : prev.h,
+      s: parsed.s,
+      v: parsed.v,
+    }));
+  }, [value]);
 
+  useEffect(() => {
+    return () => {
+      const current = hsvRef.current;
+      const hex = hsvToHex(current.h, current.s, current.v);
+      if (hex.toLowerCase() !== valueRef.current.toLowerCase()) {
+        onChangeRef.current(hex);
+      }
+    };
+  }, []);
+
+  const { h, s, v } = hsv;
   const size = COLOR_WHEEL_SIZE;
   const ring = COLOR_WHEEL_RING;
   const gap = COLOR_WHEEL_GAP;
@@ -3123,9 +3174,7 @@ function ResultsColorWheel({
 
   function emitHsv(next: { h: number; s: number; v: number }) {
     hsvRef.current = next;
-    const hex = hsvToHex(next.h, next.s, next.v);
-    lastEmittedRef.current = hex;
-    onChange(hex);
+    setHsv(next);
   }
 
   function applyFromPoint(clientX: number, clientY: number, mode: "hue" | "sv") {
@@ -3166,12 +3215,20 @@ function ResultsColorWheel({
     return null;
   }
 
+  function endDrag() {
+    if (modeRef.current === null && !draggingRef.current) return;
+    modeRef.current = null;
+    draggingRef.current = false;
+    const current = hsvRef.current;
+    onChangeRef.current(hsvToHex(current.h, current.s, current.v));
+  }
+
   return (
     <div
       ref={rootRef}
       role="slider"
       aria-label="Color wheel"
-      aria-valuetext={value}
+      aria-valuetext={hsvToHex(h, s, v)}
       className="relative touch-none select-none"
       style={{ width: size, height: size }}
       onPointerDown={(e) => {
@@ -3180,18 +3237,15 @@ function ResultsColorWheel({
         e.preventDefault();
         e.currentTarget.setPointerCapture(e.pointerId);
         modeRef.current = mode;
+        draggingRef.current = true;
         applyFromPoint(e.clientX, e.clientY, mode);
       }}
       onPointerMove={(e) => {
         if (modeRef.current === null) return;
         applyFromPoint(e.clientX, e.clientY, modeRef.current);
       }}
-      onPointerUp={() => {
-        modeRef.current = null;
-      }}
-      onPointerCancel={() => {
-        modeRef.current = null;
-      }}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
     >
       <div
         className="absolute inset-0 rounded-full"
@@ -3249,6 +3303,7 @@ function ResultsColorPicker({
   colorVariables?: ProjectVariable[];
 }) {
   const colorVariables = useColorVariables(colorVariablesProp);
+  const setColorVariableValue = useSetColorVariableValue();
   const linkedVariableId = colorVariableIdFromStored(value);
   const linkedVariable = linkedVariableId
     ? colorVariables.find((variable) => variable.id === linkedVariableId)
@@ -3261,10 +3316,48 @@ function ResultsColorPicker({
   const [wheelPos, setWheelPos] = useState({ top: 0, left: 0 });
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const hexDraftRef = useRef(hexDraft);
+  const displayValueRef = useRef(displayValue);
+  const valueRef = useRef(value);
+  const linkedVariableIdRef = useRef(linkedVariableId);
+  const setColorVariableValueRef = useRef(setColorVariableValue);
+  const onChangeRef = useRef(onChange);
+  hexDraftRef.current = hexDraft;
+  displayValueRef.current = displayValue;
+  valueRef.current = value;
+  linkedVariableIdRef.current = linkedVariableId;
+  setColorVariableValueRef.current = setColorVariableValue;
+  onChangeRef.current = onChange;
 
   useEffect(() => {
     setHexDraft(displayValue);
   }, [displayValue]);
+
+  function commitColor(next: string) {
+    if (linkedVariableId && setColorVariableValue) {
+      setColorVariableValue(linkedVariableId, next);
+      return;
+    }
+    onChange(next);
+  }
+
+  function commitHex(raw: string) {
+    const next = parseHexColor(raw) ?? displayValueRef.current;
+    setHexDraft(next);
+    const linkedId = linkedVariableIdRef.current;
+    if (linkedId && setColorVariableValueRef.current) {
+      if (next.toLowerCase() !== displayValueRef.current.toLowerCase()) {
+        setColorVariableValueRef.current(linkedId, next);
+      }
+      return;
+    }
+    if (next !== valueRef.current) onChangeRef.current(next);
+  }
+
+  function closeWheel() {
+    commitHex(hexDraftRef.current);
+    setWheelOpen(false);
+  }
 
   useEffect(() => {
     if (!wheelOpen) return;
@@ -3294,10 +3387,10 @@ function ResultsColorPicker({
       if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) {
         return;
       }
-      setWheelOpen(false);
+      closeWheel();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setWheelOpen(false);
+      if (e.key === "Escape") closeWheel();
     };
     window.addEventListener("pointerdown", onDown, true);
     window.addEventListener("keydown", onKey);
@@ -3311,12 +3404,6 @@ function ResultsColorPicker({
     };
   }, [wheelOpen, compact, colorVariables.length]);
 
-  function commitHex(raw: string) {
-    const next = parseHexColor(raw) ?? displayValue;
-    setHexDraft(next);
-    if (next !== value) onChange(next);
-  }
-
   const hexInput = (
     <input
       aria-label={`${label} hex`}
@@ -3329,7 +3416,12 @@ function ResultsColorPicker({
         const raw = e.target.value;
         setHexDraft(raw);
         const parsed = parseHexColor(raw, false);
-        if (parsed && parsed !== value) onChange(parsed);
+        if (!parsed) return;
+        if (linkedVariableId) {
+          if (parsed.toLowerCase() !== displayValue.toLowerCase()) commitColor(parsed);
+          return;
+        }
+        if (parsed !== value) onChange(parsed);
       }}
       onBlur={() => commitHex(hexDraft)}
       className={`w-full rounded-lg border border-black/15 bg-white font-mono text-sm text-black outline-none focus:border-[#2f5d76] disabled:opacity-60 ${
@@ -3340,7 +3432,10 @@ function ResultsColorPicker({
 
   function toggleMenu() {
     onCheckpoint();
-    setWheelOpen((open) => !open);
+    setWheelOpen((open) => {
+      if (open) commitHex(hexDraftRef.current);
+      return !open;
+    });
   }
 
   const menu = wheelOpen
@@ -3384,8 +3479,7 @@ function ResultsColorPicker({
           ) : null}
           <div className="grid grid-cols-8 gap-1.5">
             {RESULTS_PRESET_COLORS.map((color) => {
-              const selected =
-                !linkedVariableId && displayValue.toLowerCase() === color;
+              const selected = displayValue.toLowerCase() === color;
               return (
                 <button
                   key={color}
@@ -3393,7 +3487,7 @@ function ResultsColorPicker({
                   title={color}
                   aria-label={`${label} ${color}`}
                   aria-pressed={selected}
-                  onClick={() => onChange(color)}
+                  onClick={() => commitColor(color)}
                   className={`aspect-square w-full cursor-pointer rounded-md border border-black/20 ${
                     selected ? "ring-2 ring-[#2f5d76] ring-offset-1" : ""
                   }`}
@@ -3404,10 +3498,7 @@ function ResultsColorPicker({
           </div>
           {compact && <div className="mt-3">{hexInput}</div>}
           <div className="mt-3">
-            <ResultsColorWheel
-              value={displayValue}
-              onChange={(color) => onChange(color)}
-            />
+            <ResultsColorWheel value={displayValue} onChange={commitColor} />
           </div>
         </div>,
         document.body,
@@ -6332,6 +6423,32 @@ export function CreateQuizEditor({
         (variable) => variable.type === "color",
       ),
     [variables, localVariables],
+  );
+  const setColorVariableValue = useCallback((id: string, hex: string) => {
+    const rgb = parseColorRgb(hex) ?? ([...DEFAULT_COLOR_RGB] as ColorRgb);
+    setVariables((prev) => {
+      if (!prev.some((variable) => variable.id === id)) return prev;
+      return prev.map((variable) =>
+        variable.id === id ? { ...variable, value: [...rgb] as ColorRgb } : variable,
+      );
+    });
+    setLocalVariables((prev) => {
+      if (!prev.some((variable) => variable.id === id)) return prev;
+      return prev.map((variable) =>
+        variable.id === id ? { ...variable, value: [...rgb] as ColorRgb } : variable,
+      );
+    });
+  }, []);
+  const colorVariablesContextValue = useMemo<ColorVariablesContextValue>(
+    () => ({
+      colorVariables: quizScreen
+        ? [...quizScreen.projectVariables, ...quizScreen.localVariables].filter(
+            (variable) => variable.type === "color",
+          )
+        : colorVariables,
+      setColorVariableValue: quizScreen ? null : setColorVariableValue,
+    }),
+    [colorVariables, quizScreen, setColorVariableValue],
   );
   const [defaultAnswers, setDefaultAnswers] = useState<AnswerOption[]>(
     initialQuiz.defaultAnswers,
@@ -10889,6 +11006,10 @@ export function CreateQuizEditor({
       : localVariables;
   const resolvePlayColor = (raw: string | undefined, fallback: string) =>
     resolveStoredColor(raw, playColorProject, playColorLocal, fallback);
+  const resultsPaintBackground = resolvePlayColor(
+    results.backgroundColor,
+    RESULTS_BACKGROUND_DEFAULT,
+  );
   const quizUiPage = resolvedQuizUi(
     playQuizUi,
     resultsBaseWidth,
@@ -11044,15 +11165,7 @@ export function CreateQuizEditor({
   }
 
   return (
-    <ColorVariablesContext.Provider
-      value={
-        quizScreen
-          ? [...quizScreen.projectVariables, ...quizScreen.localVariables].filter(
-              (variable) => variable.type === "color",
-            )
-          : colorVariables
-      }
-    >
+    <ColorVariablesContext.Provider value={colorVariablesContextValue}>
     <div className="relative h-screen w-full overflow-hidden bg-white">
       <div
         className="pointer-events-none absolute top-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2"
@@ -11105,9 +11218,14 @@ export function CreateQuizEditor({
         }`}
         style={
           isResultsView
-            ? { backgroundColor: results.backgroundColor }
+            ? { backgroundColor: resultsPaintBackground }
             : isQuizUiView
-              ? { backgroundColor: quizUiPage.backgroundColor }
+              ? {
+                  backgroundColor: resolvePlayColor(
+                    quizUiPage.backgroundColor,
+                    QUIZ_UI_BACKGROUND_DEFAULT,
+                  ),
+                }
               : undefined
         }
         onContextMenu={
@@ -11137,7 +11255,7 @@ export function CreateQuizEditor({
           <div
             className="relative overflow-x-clip overflow-y-clip"
             style={{
-              backgroundColor: results.backgroundColor,
+              backgroundColor: resultsPaintBackground,
               marginLeft: resultsPreview ? 0 : resultsLeftInset,
               width: resultsPreview ? resultsBaseWidth : resultsAvailableWidth,
               minHeight: "100%",
@@ -11147,7 +11265,7 @@ export function CreateQuizEditor({
             <div
               className="absolute top-0 left-0 origin-top-left"
               style={{
-                backgroundColor: results.backgroundColor,
+                backgroundColor: resultsPaintBackground,
                 width: resultsBaseWidth,
                 height: resultsPageHeight,
                 transform: layoutPaintTransform(
@@ -11172,6 +11290,14 @@ export function CreateQuizEditor({
               )}
               {results.axes.map((axis) => {
                 const selected = isResultsSelected(axis.id);
+                const axisLeftColor = resolvePlayColor(
+                  axis.leftColor,
+                  RESULTS_AXIS_LEFT_COLOR,
+                );
+                const axisRightColor = resolvePlayColor(
+                  axis.rightColor,
+                  RESULTS_AXIS_RIGHT_COLOR,
+                );
                 const labelBoxes: {
                   key: "left" | "center" | "right";
                   align: "left" | "center" | "right";
@@ -11186,7 +11312,10 @@ export function CreateQuizEditor({
                     segments: axis.leftSegments,
                     field: "leftSegments",
                     fontSize: axis.leftFontSize,
-                    textColor: axis.leftTextColor,
+                    textColor: resolvePlayColor(
+                      axis.leftTextColor,
+                      RESULTS_TEXT_COLOR_DEFAULT,
+                    ),
                   },
                   {
                     key: "center",
@@ -11194,7 +11323,10 @@ export function CreateQuizEditor({
                     segments: axis.segments,
                     field: "segments",
                     fontSize: axis.centerFontSize,
-                    textColor: axis.centerTextColor,
+                    textColor: resolvePlayColor(
+                      axis.centerTextColor,
+                      RESULTS_TEXT_COLOR_DEFAULT,
+                    ),
                   },
                   {
                     key: "right",
@@ -11202,7 +11334,10 @@ export function CreateQuizEditor({
                     segments: axis.rightSegments,
                     field: "rightSegments",
                     fontSize: axis.rightFontSize,
-                    textColor: axis.rightTextColor,
+                    textColor: resolvePlayColor(
+                      axis.rightTextColor,
+                      RESULTS_TEXT_COLOR_DEFAULT,
+                    ),
                   },
                 ];
                 return (
@@ -11314,8 +11449,8 @@ export function CreateQuizEditor({
                                       className="pointer-events-none flex min-w-0 items-center justify-center overflow-hidden px-1 text-xs font-semibold whitespace-nowrap"
                                       style={{
                                         width: `${pct}%`,
-                                        backgroundColor: axis.leftColor,
-                                        color: contrastTextOn(axis.leftColor),
+                                        backgroundColor: axisLeftColor,
+                                        color: contrastTextOn(axisLeftColor),
                                       }}
                                     >
                                       {formatAxisPercent(pct)}
@@ -11332,8 +11467,8 @@ export function CreateQuizEditor({
                                       className="pointer-events-none flex min-w-0 items-center justify-center overflow-hidden px-1 text-xs font-semibold whitespace-nowrap"
                                       style={{
                                         width: `${rest}%`,
-                                        backgroundColor: axis.rightColor,
-                                        color: contrastTextOn(axis.rightColor),
+                                        backgroundColor: axisRightColor,
+                                        color: contrastTextOn(axisRightColor),
                                       }}
                                     >
                                       {formatAxisPercent(rest)}
@@ -11366,6 +11501,22 @@ export function CreateQuizEditor({
               })}
               {results.compasses.map((compass) => {
                 const selected = isResultsSelected(compass.id);
+                const compassTopLeft = resolvePlayColor(
+                  compass.topLeftColor,
+                  RESULTS_COMPASS_TOP_LEFT_COLOR,
+                );
+                const compassTopRight = resolvePlayColor(
+                  compass.topRightColor,
+                  RESULTS_COMPASS_TOP_RIGHT_COLOR,
+                );
+                const compassBottomLeft = resolvePlayColor(
+                  compass.bottomLeftColor,
+                  RESULTS_COMPASS_BOTTOM_LEFT_COLOR,
+                );
+                const compassBottomRight = resolvePlayColor(
+                  compass.bottomRightColor,
+                  RESULTS_COMPASS_BOTTOM_RIGHT_COLOR,
+                );
                 const labelWidth = Math.max(
                   120,
                   Math.round(compass.width * 0.5),
@@ -11398,7 +11549,10 @@ export function CreateQuizEditor({
                       align="center"
                       preview={resultsPreview}
                       fontSize={fontSize}
-                      color={textColor}
+                      color={resolvePlayColor(
+                        textColor,
+                        RESULTS_TEXT_COLOR_DEFAULT,
+                      )}
                       onCheckpoint={pushHistory}
                       onChange={(next) =>
                         updateResultsCompass(compass.id, { [field]: next })
@@ -11495,10 +11649,10 @@ export function CreateQuizEditor({
                       }`}
                     >
                       <div className="grid h-full w-full grid-cols-2 grid-rows-2">
-                        <div style={{ backgroundColor: compass.topLeftColor }} />
-                        <div style={{ backgroundColor: compass.topRightColor }} />
-                        <div style={{ backgroundColor: compass.bottomLeftColor }} />
-                        <div style={{ backgroundColor: compass.bottomRightColor }} />
+                        <div style={{ backgroundColor: compassTopLeft }} />
+                        <div style={{ backgroundColor: compassTopRight }} />
+                        <div style={{ backgroundColor: compassBottomLeft }} />
+                        <div style={{ backgroundColor: compassBottomRight }} />
                       </div>
                       <div className="pointer-events-none absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 bg-black" />
                       <div className="pointer-events-none absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-black" />
@@ -11581,7 +11735,10 @@ export function CreateQuizEditor({
                       align="center"
                       preview={resultsPreview}
                       fontSize={bar.fontSize}
-                      color={bar.textColor}
+                      color={resolvePlayColor(
+                        bar.textColor,
+                        RESULTS_TEXT_COLOR_DEFAULT,
+                      )}
                       onCheckpoint={pushHistory}
                       onChange={(segments) =>
                         updateResultsBar(bar.id, { segments })
@@ -11842,7 +11999,10 @@ export function CreateQuizEditor({
                         align={box.textAlign}
                         preview={resultsPreview}
                         fontSize={box.fontSize}
-                        color={box.textColor}
+                        color={resolvePlayColor(
+                          box.textColor,
+                          RESULTS_TEXT_COLOR_DEFAULT,
+                        )}
                         onCheckpoint={pushHistory}
                         onChange={(segments) =>
                           updateResultsTextBox(box.id, { segments })
@@ -14331,20 +14491,22 @@ export function CreateQuizEditor({
                             className="w-20 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
                           />
                         ) : variable.type === "color" ? (
-                          <input
-                            type="color"
+                          <ResultsColorPicker
+                            compact
+                            variant="fill"
+                            label={`${variable.name || "Variable"} color`}
                             value={colorRgbToHex(
                               parseColorRgb(variable.value) ?? DEFAULT_COLOR_RGB,
                             )}
-                            aria-label="Color value"
-                            onFocus={() => pushHistory()}
-                            onChange={(e) =>
+                            colorVariables={[]}
+                            onCheckpoint={pushHistory}
+                            onChange={(hex) =>
                               updateVariable(variable.id, {
                                 value:
-                                  parseColorRgb(e.target.value) ?? DEFAULT_COLOR_RGB,
+                                  parseColorRgb(hex) ??
+                                  ([...DEFAULT_COLOR_RGB] as ColorRgb),
                               })
                             }
-                            className="h-7 w-10 shrink-0 cursor-pointer rounded border border-black/15 bg-white p-0.5"
                           />
                         ) : (
                           <DeferredNumberInput
@@ -14623,20 +14785,22 @@ export function CreateQuizEditor({
                             className="w-20 shrink-0 rounded border border-black/15 px-1.5 py-0.5 text-sm text-black outline-none focus:border-[#2f5d76]"
                           />
                         ) : variable.type === "color" ? (
-                          <input
-                            type="color"
+                          <ResultsColorPicker
+                            compact
+                            variant="fill"
+                            label={`${variable.name || "Local variable"} color`}
                             value={colorRgbToHex(
                               parseColorRgb(variable.value) ?? DEFAULT_COLOR_RGB,
                             )}
-                            aria-label="Local color value"
-                            onFocus={() => pushHistory()}
-                            onChange={(e) =>
+                            colorVariables={[]}
+                            onCheckpoint={pushHistory}
+                            onChange={(hex) =>
                               updateLocalVariable(variable.id, {
                                 value:
-                                  parseColorRgb(e.target.value) ?? DEFAULT_COLOR_RGB,
+                                  parseColorRgb(hex) ??
+                                  ([...DEFAULT_COLOR_RGB] as ColorRgb),
                               })
                             }
-                            className="h-7 w-10 shrink-0 cursor-pointer rounded border border-black/15 bg-white p-0.5"
                           />
                         ) : (
                           <DeferredNumberInput
