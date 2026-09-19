@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- Transparent canvas; only the disc is painted -->
+  <g transform="translate(256 256)">
+    <!-- Top-left: yellow -->
+    <path d="M0 0 L-228 0 A228 228 0 0 1 0 -228 Z" fill="#F5F5A7"/>
+    <!-- Top-right: blue -->
+    <path d="M0 0 L0 -228 A228 228 0 0 1 228 0 Z" fill="#A7D2E6"/>
+    <!-- Bottom-right: pink -->
+    <path d="M0 0 L228 0 A228 228 0 0 1 0 228 Z" fill="#E6AAAF"/>
+    <!-- Bottom-left: green -->
+    <path d="M0 0 L0 228 A228 228 0 0 1 -228 0 Z" fill="#AFD2AF"/>
+    <circle r="228" stroke="#FFFFFF" stroke-width="10"/>
+    <text
+      y="18"
+      dominant-baseline="middle"
+      text-anchor="middle"
+      fill="#1E1E1E"
+      font-family="Arial Black, Arial, Helvetica, sans-serif"
+      font-size="250"
+      font-weight="700"
+    >?</text>
+  </g>
+</svg>

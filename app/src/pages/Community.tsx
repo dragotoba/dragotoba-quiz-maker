@@ -41,6 +41,24 @@ function quizTags(quiz: CommunityQuizSummary) {
   return Array.isArray(quiz.tags) ? quiz.tags : [];
 }
 
+function coverSrc(quiz: CommunityQuizSummary) {
+  const raw = quiz.coverImage.trim();
+  if (!raw) return DEFAULT_QUIZ_COVER;
+  // Older listings may point at the PNG icon which composites with a black square in some views.
+  if (
+    raw === "/quiz-maker-icon.png" ||
+    raw.endsWith("/quiz-maker-icon.png") ||
+    raw === DEFAULT_QUIZ_COVER
+  ) {
+    return DEFAULT_QUIZ_COVER;
+  }
+  return raw;
+}
+
+function isDefaultCover(quiz: CommunityQuizSummary) {
+  return coverSrc(quiz) === DEFAULT_QUIZ_COVER;
+}
+
 function TagPills({
   tags,
   singleLine = false,
@@ -531,12 +549,12 @@ export default function Community() {
                 >
                   <div className="flex h-40 items-center justify-center bg-[#f4f1ea]">
                     <img
-                      src={quiz.coverImage.trim() || DEFAULT_QUIZ_COVER}
+                      src={coverSrc(quiz)}
                       alt=""
                       className={
-                        quiz.coverImage.trim()
-                          ? "h-full w-full object-cover"
-                          : "h-24 w-24 object-contain"
+                        isDefaultCover(quiz)
+                          ? "h-24 w-24 rounded-full bg-transparent object-contain"
+                          : "h-full w-full object-cover"
                       }
                     />
                   </div>
@@ -610,12 +628,12 @@ export default function Community() {
                 <div className="shrink-0 p-5 pb-0">
                   <div className="flex max-h-[40vh] items-center justify-center overflow-auto rounded-xl bg-[#f4f1ea]">
                     <img
-                      src={selected.coverImage.trim() || DEFAULT_QUIZ_COVER}
+                      src={coverSrc(selected)}
                       alt=""
                       className={
-                        selected.coverImage.trim()
-                          ? "max-h-[40vh] w-auto max-w-full object-contain"
-                          : "h-28 w-28 object-contain"
+                        isDefaultCover(selected)
+                          ? "h-28 w-28 rounded-full bg-transparent object-contain"
+                          : "max-h-[40vh] w-auto max-w-full object-contain"
                       }
                     />
                   </div>
