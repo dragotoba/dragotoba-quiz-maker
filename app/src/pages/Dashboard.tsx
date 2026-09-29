@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import AccountButton from "@/components/AccountButton";
 import {
@@ -12,6 +12,7 @@ import {
 import {
   createStoredQuiz,
   deleteStoredQuiz,
+  importStoredQuiz,
   listQuizSummaries,
   localQuizCount,
   type QuizSummary,
@@ -42,6 +43,8 @@ export default function Dashboard() {
   const [migrating, setMigrating] = useState(false);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [user, setUser] = useState<AuthUser | null>(() => getStoredUser());
   const [displayNameDraft, setDisplayNameDraft] = useState(
     () => getStoredUser()?.displayName?.trim() || getStoredUser()?.username || "",
@@ -101,6 +104,20 @@ export default function Dashboard() {
     } catch (err) {
       setCreating(false);
       setError(err instanceof Error ? err.message : "Could not create quiz.");
+    }
+  }
+
+  async function handleImportFile(file: File | null) {
+    if (!file || importing) return;
+    setImporting(true);
+    setError("");
+    try {
+      const text = await file.text();
+      const quiz = await importStoredQuiz(text);
+      navigate(`/quiz/${quiz.id}`);
+    } catch (err) {
+      setImporting(false);
+      setError(err instanceof Error ? err.message : "Could not import quiz.");
     }
   }
 
@@ -231,14 +248,36 @@ export default function Dashboard() {
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => void handleCreate()}
-            disabled={creating || migrating}
-            className="cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {creating ? "Creating…" : "Create New Quiz"}
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              aria-label="Import quiz file"
+              onChange={(e) => {
+                const file = e.target.files?.[0] ?? null;
+                e.target.value = "";
+                void handleImportFile(file);
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => importInputRef.current?.click()}
+              disabled={importing || migrating}
+              className="cursor-pointer rounded-full border border-[#2f5d76] bg-white px-6 py-3 text-sm font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/5 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {importing ? "Importing…" : "Import Quiz"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleCreate()}
+              disabled={creating || migrating}
+              className="cursor-pointer rounded-full border-none bg-[#2f5d76] px-6 py-3 text-sm font-semibold text-[#f8fafc] shadow-[0_4px_14px_rgba(0,0,0,0.12)] hover:bg-[#244a5e] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {creating ? "Creating…" : "Create New Quiz"}
+            </button>
+          </div>
         </div>
 
         {signedIn ? (

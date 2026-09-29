@@ -23,6 +23,7 @@ import {
   normalizeListing,
   duplicateStoredQuiz,
   publishStoredQuiz,
+  quizExportFileName,
   QUIZ_CATEGORIES,
   saveStoredQuiz,
   normalizeTagToken,
@@ -11224,6 +11225,22 @@ export function CreateQuizEditor({
     setListingSaved(true);
   }
 
+  function handleExportQuiz() {
+    const quiz = getPersistedQuiz();
+    persistQuiz(quiz);
+    const blob = new Blob([JSON.stringify(quiz, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = quizExportFileName(quiz.projectName);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
   function unlistedQuizLink() {
     return `${window.location.origin}/community/${encodeURIComponent(quizIdRef.current)}`;
   }
@@ -14419,6 +14436,13 @@ export function CreateQuizEditor({
                 className="w-full cursor-pointer rounded-full border border-[#2f5d76] bg-white px-6 py-3 text-sm font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/5"
               >
                 {listingSaved ? "Saved" : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={handleExportQuiz}
+                className="w-full cursor-pointer rounded-full border border-[#2f5d76] bg-white px-6 py-3 text-sm font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/5"
+              >
+                Export quiz
               </button>
               {publishError ? (
                 <p className="text-sm font-medium text-[#7a3b3b]" role="alert">
