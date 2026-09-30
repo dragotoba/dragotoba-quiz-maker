@@ -679,6 +679,33 @@ export async function createStoredQuiz(): Promise<StoredQuizDocument> {
   return doc;
 }
 
+export function quizExportFileName(projectName: string) {
+  const base = (projectName.trim() || DEFAULT_PROJECT_NAME)
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+  return `${base || "quiz"}.json`;
+}
+
+export async function importStoredQuiz(rawText: string): Promise<StoredQuizDocument> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    throw new Error("That file is not a quiz.");
+  }
+  const doc = asDocument(parsed);
+  if (!doc) throw new Error("That file is not a quiz.");
+  const imported: StoredQuizDocument = {
+    ...doc,
+    id: crypto.randomUUID(),
+    updatedAt: Date.now(),
+  };
+  await saveStoredQuiz(imported);
+  return imported;
+}
+
 export async function duplicateStoredQuiz(
   source: StoredQuizDocument,
 ): Promise<StoredQuizDocument> {
