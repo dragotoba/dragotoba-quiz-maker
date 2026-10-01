@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, createContext, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, createContext, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -9,6 +9,7 @@ import {
   parseColorRgb,
   startQuiz,
   submitAnswer,
+  PREVIOUS_ANSWER_CONDITION,
   type ColorRgb,
   type QuizPlayScreen,
   type QuizQuestionScreen,
@@ -1841,6 +1842,8 @@ function OperandEditor({
 type ConditionsEditorProps = {
   conditions: TransitionCondition[];
   variables: ProjectVariable[];
+  /** Answers of the question this transition leaves. Enables the previous-answer condition. */
+  originAnswers?: AnswerOption[];
   onCheckpoint: () => void;
   onAddCondition: () => void;
   onUpdateCondition: (conditionId: string, patch: Partial<TransitionCondition>) => void;
@@ -1850,20 +1853,25 @@ type ConditionsEditorProps = {
 function ConditionsEditor({
   conditions,
   variables,
+  originAnswers,
   onCheckpoint,
   onAddCondition,
   onUpdateCondition,
   onRemoveCondition,
 }: ConditionsEditorProps) {
+  const allowPreviousAnswer = originAnswers !== undefined;
   return (
     <>
       <div className="mt-3 flex flex-col gap-2">
         {conditions.map((condition, index) => {
+          const previousAnswer =
+            condition.variableId === PREVIOUS_ANSWER_CONDITION;
           const selectedVar = variables.find(
             (variable) => variable.id === condition.variableId,
           );
           const varType = selectedVar?.type ?? "number";
-          const comparisonOnly = isComparisonOnlyVariableType(varType);
+          const comparisonOnly =
+            previousAnswer || isComparisonOnlyVariableType(varType);
           const operatorOptions = comparisonOnly
             ? CONDITION_OPERATORS.filter((op) => op.value === "eq" || op.value === "neq")
             : CONDITION_OPERATORS;
@@ -1871,6 +1879,9 @@ function ConditionsEditor({
             comparisonOnly && condition.operator !== "eq" && condition.operator !== "neq"
               ? "eq"
               : condition.operator;
+          const answerChoices = originAnswers ?? [];
+          const selectedAnswerId =
+            typeof condition.value === "string" ? condition.value : "";
 
           return (
             <div key={condition.id} className="flex flex-col gap-2">
@@ -1904,6 +1915,16 @@ function ConditionsEditor({
                     onFocus={onCheckpoint}
                     onChange={(e) => {
                       const variableId = e.target.value;
+                      if (variableId === PREVIOUS_ANSWER_CONDITION) {
+                        onUpdateCondition(condition.id, {
+                          variableId,
+                          operator:
+                            condition.operator === "neq" ? "neq" : "eq",
+                          value: answerChoices[0]?.id ?? "",
+                          valueVariableId: undefined,
+                        });
+                        return;
+                      }
                       const nextVar = variables.find((v) => v.id === variableId);
                       const nextType = nextVar?.type ?? "number";
                       onUpdateCondition(condition.id, {
@@ -1921,8 +1942,13 @@ function ConditionsEditor({
                     className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
                   >
                     <option value="">
-                      {variables.length === 0 ? "No variables" : "Variable…"}
+                      {variables.length === 0 && !allowPreviousAnswer
+                        ? "No variables"
+                        : "Variable…"}
                     </option>
+                    {allowPreviousAnswer || previousAnswer ? (
+                      <option value={PREVIOUS_ANSWER_CONDITION}>Previous answer</option>
+                    ) : null}
                     {variables.map((variable) => (
                       <option key={variable.id} value={variable.id}>
                         {variable.name}
@@ -1960,17 +1986,45 @@ function ConditionsEditor({
                     ))}
                   </select>
 
-                  <OperandEditor
-                    varType={varType}
-                    value={condition.value}
-                    valueVariableId={condition.valueVariableId}
-                    variables={variables}
-                    excludeVariableId={condition.variableId}
-                    valueAriaLabel="Condition amount"
-                    variableAriaLabel="Condition compare variable"
-                    onCheckpoint={onCheckpoint}
-                    onChange={(patch) => onUpdateCondition(condition.id, patch)}
-                  />
+                  {previousAnswer ? (
+                    <select
+                      aria-label="Condition answer"
+                      value={selectedAnswerId}
+                      onFocus={onCheckpoint}
+                      onChange={(e) =>
+                        onUpdateCondition(condition.id, {
+                          value: e.target.value,
+                          valueVariableId: undefined,
+                        })
+                      }
+                      className="min-w-0 flex-1 rounded border border-black/15 bg-white px-1.5 py-1 text-xs text-black outline-none focus:border-[#2f5d76]"
+                    >
+                      {answerChoices.length === 0 ? (
+                        <option value="">No answers</option>
+                      ) : null}
+                      {selectedAnswerId &&
+                      !answerChoices.some((answer) => answer.id === selectedAnswerId) ? (
+                        <option value={selectedAnswerId}>Missing answer</option>
+                      ) : null}
+                      {answerChoices.map((answer) => (
+                        <option key={answer.id} value={answer.id}>
+                          {answer.name.trim() || "Answer"}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <OperandEditor
+                      varType={varType}
+                      value={condition.value}
+                      valueVariableId={condition.valueVariableId}
+                      variables={variables}
+                      excludeVariableId={condition.variableId}
+                      valueAriaLabel="Condition amount"
+                      variableAriaLabel="Condition compare variable"
+                      onCheckpoint={onCheckpoint}
+                      onChange={(patch) => onUpdateCondition(condition.id, patch)}
+                    />
+                  )}
                 </div>
               </div>
             </div>
@@ -5806,6 +5860,19 @@ function quizUiButtonShiftY(ui: QuizUiDocument, visibleCount: number) {
   return Math.max(0, lastSlot.y + lastSlot.height - lastShownBottom);
 }
 
+function shiftBelowGrownBox(
+  y: number,
+  sources: { id: string; bottom: number; extra: number }[],
+  selfId?: string,
+) {
+  let shift = 0;
+  for (const source of sources) {
+    if (source.id === selfId || source.extra <= 0) continue;
+    if (y >= source.bottom - 0.5) shift += source.extra;
+  }
+  return y + shift;
+}
+
 function quizUiPlayLayout(ui: QuizUiDocument, visibleCount: number) {
   const shiftY = quizUiButtonShiftY(ui, visibleCount);
   return {
@@ -6531,6 +6598,9 @@ export function CreateQuizEditor({
     null,
   );
   const [quizAutoAdvance, setQuizAutoAdvance] = useState(false);
+  const [quizTextOverflow, setQuizTextOverflow] = useState<Record<string, number>>({});
+  const quizQuestionMeasureRef = useRef<HTMLDivElement>(null);
+  const quizTextMeasureRefs = useRef(new Map<string, HTMLDivElement>());
   const [axisLabelHeights, setAxisLabelHeights] = useState<Record<string, number>>(
     {},
   );
@@ -6767,6 +6837,11 @@ export function CreateQuizEditor({
     editorView === "section"
       ? (transitions.find((t) => t.id === selectedTransitionId) ?? null)
       : null;
+  const transitionOrigin = selectedTransition
+    ? boxes.find((box) => box.id === selectedTransition.fromId)
+    : null;
+  const transitionOriginAnswers =
+    transitionOrigin?.kind === "question" ? transitionOrigin.answers : undefined;
   const selectedResultsText =
     editorView === "results"
       ? (results.textBoxes.find((box) => box.id === selectedResultsTextId) ?? null)
@@ -11211,6 +11286,61 @@ export function CreateQuizEditor({
     quizPlayUi,
     viewportSize.height || 800,
   );
+  const quizGrowSources = [
+    {
+      id: quizUiPage.question.id,
+      bottom: quizUiPage.question.y + quizUiPage.question.height,
+      extra: quizTextOverflow[quizUiPage.question.id] ?? 0,
+    },
+    ...(quizUiPage.textBoxes ?? []).map((box) => ({
+      id: box.id,
+      bottom: box.y + box.height,
+      extra: quizTextOverflow[box.id] ?? 0,
+    })),
+  ];
+  const quizGrowExtra = quizGrowSources.reduce((sum, source) => sum + source.extra, 0);
+  function quizShiftedY(y: number, selfId?: string) {
+    return shiftBelowGrownBox(y, quizGrowSources, selfId);
+  }
+
+  useLayoutEffect(() => {
+    if (quizScreen?.kind !== "question") {
+      setQuizTextOverflow((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      return;
+    }
+    const next: Record<string, number> = {};
+    const questionEl = quizQuestionMeasureRef.current;
+    const questionBox = questionEl?.parentElement;
+    if (questionEl && questionBox) {
+      const style = getComputedStyle(questionBox);
+      const pad =
+        (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      const needed = questionEl.offsetHeight + pad;
+      const extra = Math.ceil(needed - quizUiPage.question.height);
+      if (extra > 1) next[quizUiPage.question.id] = extra;
+    }
+    for (const box of quizUiPage.textBoxes ?? []) {
+      const content = quizTextMeasureRefs.current.get(box.id);
+      const frame = content?.parentElement;
+      if (!content || !frame) continue;
+      const style = getComputedStyle(frame);
+      const pad =
+        (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      const extra = Math.ceil(content.offsetHeight + pad - box.height);
+      if (extra > 1) next[box.id] = extra;
+    }
+    setQuizTextOverflow((prev) => {
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      if (
+        prevKeys.length === nextKeys.length &&
+        nextKeys.every((key) => prev[key] === next[key])
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  });
   const quizPlayFit =
     quizScreen?.kind === "question"
       ? horizontalPlayFit(quizUiHorizontalBounds(quizPlayUi), resultsBaseWidth)
@@ -14237,6 +14367,7 @@ export function CreateQuizEditor({
               <ConditionsEditor
                 conditions={selectedTransition.conditions}
                 variables={allVariables}
+                originAnswers={transitionOriginAnswers}
                 onCheckpoint={pushHistory}
                 onAddCondition={addTransitionCondition}
                 onUpdateCondition={updateTransitionCondition}
@@ -15128,14 +15259,14 @@ export function CreateQuizEditor({
             className="relative overflow-x-clip"
             style={{
               minHeight: "100%",
-              height: quizPlayPageHeight * quizPlayFit.scale,
+              height: (quizPlayPageHeight + quizGrowExtra) * quizPlayFit.scale,
             }}
           >
             <div
               className="absolute top-0 left-0 origin-top-left"
               style={{
                 width: resultsBaseWidth,
-                height: quizPlayPageHeight,
+                height: quizPlayPageHeight + quizGrowExtra,
                 transform: layoutPaintTransform(
                   quizPlayFit.scale,
                   quizPlayFit.offsetX,
@@ -15146,9 +15277,11 @@ export function CreateQuizEditor({
               className="absolute flex items-center justify-center overflow-hidden rounded-2xl px-8 py-10 text-center leading-relaxed font-medium shadow-sm"
               style={{
                 left: quizUiPage.question.x,
-                top: quizUiPage.question.y,
+                top: quizShiftedY(quizUiPage.question.y, quizUiPage.question.id),
                 width: quizUiPage.question.width,
-                height: quizUiPage.question.height,
+                height:
+                  quizUiPage.question.height +
+                  (quizTextOverflow[quizUiPage.question.id] ?? 0),
                 ...questionBoxPaint(quizQuestionBox.color, resolvePlayColor),
                 fontSize: quizUiChromeFontSize(
                   quizUiPage.question,
@@ -15156,7 +15289,9 @@ export function CreateQuizEditor({
                 ),
               }}
             >
-              {quizQuestionBox.question?.trim() || "\u00a0"}
+              <div ref={quizQuestionMeasureRef} className="w-full break-words">
+                {quizQuestionBox.question?.trim() || "\u00a0"}
+              </div>
             </div>
 
             {quizPlayLayout.answers.map((rect, index) => {
@@ -15181,7 +15316,7 @@ export function CreateQuizEditor({
                   }`}
                   style={{
                     left: rect.x,
-                    top: rect.y,
+                    top: quizShiftedY(rect.y),
                     width: rect.width,
                     height: rect.height,
                     ...answerBoxPaint(
@@ -15204,7 +15339,7 @@ export function CreateQuizEditor({
                 className="absolute cursor-pointer overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm hover:brightness-90"
                 style={{
                   left: quizPlayLayout.nextButton.x,
-                  top: quizPlayLayout.nextButton.y,
+                  top: quizShiftedY(quizPlayLayout.nextButton.y),
                   width: quizPlayLayout.nextButton.width,
                   height: quizPlayLayout.nextButton.height,
                   ...quizUiButtonPaint(
@@ -15225,7 +15360,7 @@ export function CreateQuizEditor({
               className="absolute overflow-hidden rounded-xl border border-black/15 px-4 py-3 text-center font-medium shadow-sm hover:brightness-90 disabled:cursor-not-allowed disabled:opacity-40"
               style={{
                 left: quizPlayLayout.backButton.x,
-                top: quizPlayLayout.backButton.y,
+                top: quizShiftedY(quizPlayLayout.backButton.y),
                 width: quizPlayLayout.backButton.width,
                 height: quizPlayLayout.backButton.height,
                 ...quizUiButtonPaint(
@@ -15244,9 +15379,9 @@ export function CreateQuizEditor({
                 className="pointer-events-none absolute flex flex-col overflow-visible rounded-lg border-0 bg-transparent p-2"
                 style={{
                   left: box.x,
-                  top: box.y,
+                  top: quizShiftedY(box.y, box.id),
                   width: box.width,
-                  height: box.height,
+                  height: box.height + (quizTextOverflow[box.id] ?? 0),
                 }}
               >
                 {box.showImage && (
@@ -15274,7 +15409,13 @@ export function CreateQuizEditor({
                     />
                   </div>
                 )}
-                <div className="min-h-0 flex-1 overflow-hidden">
+                <div
+                  ref={(el) => {
+                    if (el) quizTextMeasureRefs.current.set(box.id, el);
+                    else quizTextMeasureRefs.current.delete(box.id);
+                  }}
+                  className="w-full overflow-visible"
+                >
                   <ResultsRichTextEditor
                     segments={box.segments}
                     variables={allVariables}
@@ -15306,7 +15447,7 @@ export function CreateQuizEditor({
                   className="pointer-events-none absolute"
                   style={{
                     left: image.x,
-                    top: image.y,
+                    top: quizShiftedY(image.y),
                     width: image.width,
                     height: image.height,
                   }}
