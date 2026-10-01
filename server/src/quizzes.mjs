@@ -28,6 +28,8 @@ const QUIZ_CATEGORIES = [
   "What's Your ____",
   "Fandom",
   "Knowledge Test",
+  "Adventure",
+  "Comedy",
   "Other",
 ];
 const QUIZ_CATEGORY_SET = new Set(QUIZ_CATEGORIES);

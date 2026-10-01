@@ -1,5 +1,7 @@
 export const QUIZ_RESULTS_ID = "__results__";
 export const MAX_QUIZ_HOPS = 256;
+/** Left-hand side of a transition condition: the answer just chosen on the origin question. */
+export const PREVIOUS_ANSWER_CONDITION = "__previous_answer__";
 
 export type ColorRgb = [number, number, number];
 export type VariableType = "number" | "bool" | "string" | "color";
@@ -422,6 +424,7 @@ export function evaluateConditions(
   conditions: TransitionCondition[] | undefined,
   project: ProjectVariable[],
   local: ProjectVariable[],
+  previousAnswerId?: string | null,
 ): boolean {
   if (!conditions || conditions.length === 0) return true;
 
@@ -430,19 +433,28 @@ export function evaluateConditions(
 
   for (let i = 0; i < conditions.length; i++) {
     const condition = conditions[i];
-    const variable = findVariable(project, local, condition.variableId);
-    const ok = variable
-      ? compareValues(
-          variable,
-          condition.operator,
-          resolveOperandValue(
-            project,
-            local,
+    const ok =
+      condition.variableId === PREVIOUS_ANSWER_CONDITION
+        ? comparePreviousAnswer(
+            previousAnswerId,
+            condition.operator,
             condition.value,
-            condition.valueVariableId,
-          ),
-        )
-      : false;
+          )
+        : (() => {
+            const variable = findVariable(project, local, condition.variableId);
+            return variable
+              ? compareValues(
+                  variable,
+                  condition.operator,
+                  resolveOperandValue(
+                    project,
+                    local,
+                    condition.value,
+                    condition.valueVariableId,
+                  ),
+                )
+              : false;
+          })();
 
     if (i > 0 && condition.join === "or") {
       groups.push(groupOk);
@@ -453,6 +465,18 @@ export function evaluateConditions(
   }
   groups.push(groupOk);
   return groups.some(Boolean);
+}
+
+function comparePreviousAnswer(
+  previousAnswerId: string | null | undefined,
+  operator: ConditionOperator,
+  raw: VariableValue,
+): boolean {
+  const left = previousAnswerId ?? "";
+  const right = typeof raw === "string" ? raw : "";
+  if (operator === "eq") return left !== "" && left === right;
+  if (operator === "neq") return left !== right;
+  return false;
 }
 
 function shuffleIds(ids: string[]): string[] {
@@ -521,13 +545,14 @@ function pickOutgoing(
   project: ProjectVariable[],
   local: ProjectVariable[],
   tieBreaks: TieBreaks,
+  previousAnswerId?: string | null,
 ): Transition | null {
   const outgoing = section.transitions.filter((transition) => transition.fromId === fromId);
   if (outgoing.length === 0) return null;
 
   const nonFallback = outgoing.filter((transition) => !transition.fallback);
   const matching = nonFallback.filter((transition) =>
-    evaluateConditions(transition.conditions, project, local),
+    evaluateConditions(transition.conditions, project, local, previousAnswerId),
   );
   const pool =
     matching.length > 0
@@ -583,6 +608,7 @@ function followOutgoing(
   local: ProjectVariable[],
   tieBreaks: TieBreaks,
   hops: HopState,
+  previousAnswerId?: string | null,
 ): QuizPlayScreen {
   if (hops.n++ > MAX_QUIZ_HOPS) {
     return resultsScreen(project, local, tieBreaks);
@@ -591,7 +617,14 @@ function followOutgoing(
   const section = sections[sectionIndex];
   if (!section) return resultsScreen(project, local, tieBreaks);
 
-  const chosen = pickOutgoing(section, fromId, project, local, tieBreaks);
+  const chosen = pickOutgoing(
+    section,
+    fromId,
+    project,
+    local,
+    tieBreaks,
+    previousAnswerId,
+  );
   if (!chosen) {
     return goNextSection(sections, sectionIndex, project, local, tieBreaks, hops);
   }
@@ -697,6 +730,7 @@ export function submitAnswer(
     local,
     tieBreaks,
     { n: 0 },
+    question?.kind === "question" ? answerId : null,
   );
 }
 

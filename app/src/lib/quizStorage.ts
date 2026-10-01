@@ -55,6 +55,8 @@ export const QUIZ_CATEGORIES = [
   "What's Your ____",
   "Fandom",
   "Knowledge Test",
+  "Adventure",
+  "Comedy",
   "Other",
 ] as const;
 
