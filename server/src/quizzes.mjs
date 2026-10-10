@@ -75,6 +75,43 @@ function normalizeTags(raw) {
   return next;
 }
 
+function parseTagSearch(raw) {
+  if (typeof raw !== "string" || !raw.trim()) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const terms = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const tag = normalizeTagToken(item.tag);
+    if (!tag) continue;
+    const op = item.op === "or" || item.op === "not" ? item.op : "and";
+    terms.push({ tag, op });
+    if (terms.length >= 12) break;
+  }
+  return terms;
+}
+
+function tagSearchSql(terms, params) {
+  if (terms.length === 0) return "";
+  const matchSql = (tag) => {
+    params.push(tag);
+    return `EXISTS (SELECT 1 FROM unnest(p.tags) AS t WHERE LOWER(t) = LOWER($${params.length}))`;
+  };
+  let sql = matchSql(terms[0].tag);
+  for (let i = 1; i < terms.length; i++) {
+    const term = terms[i];
+    const piece = term.op === "not" ? `NOT ${matchSql(term.tag)}` : matchSql(term.tag);
+    const joiner = term.op === "or" ? "OR" : "AND";
+    sql = `(${sql} ${joiner} ${piece})`;
+  }
+  return sql;
+}
+
 function normalizeRemixedFrom(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const id = typeof raw.id === "string" && isUuid(raw.id) ? raw.id : null;
@@ -545,7 +582,14 @@ export function registerQuizRoutes(app, pool, requireUser) {
 
   app.get("/api/community/quizzes", async (req, res) => {
     const sort = COMMUNITY_SORTS.has(req.query?.sort) ? req.query.sort : "trending";
+    const nameQuery = String(req.query?.q ?? "").trim().slice(0, 80);
+    const namePattern = nameQuery
+      ? `%${nameQuery.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`
+      : null;
+    const tagTerms = parseTagSearch(req.query?.tags);
     const userId = await requestUserId(pool, req);
+    const params = [userId, namePattern];
+    const tagSql = tagSearchSql(tagTerms, params);
     try {
       const result = await pool.query(
         `SELECT p.id, p.project_name, p.description, p.cover_image, p.like_count, p.categories, p.tags,
@@ -557,9 +601,14 @@ export function registerQuizRoutes(app, pool, requireUser) {
                 ) AS liked
          ${communityFromSql(sort)}
          WHERE NOT p.unlisted
+           AND (
+             $2::text IS NULL
+             OR COALESCE(NULLIF(TRIM(p.project_name), ''), 'Untitled Quiz') ILIKE $2 ESCAPE '\\'
+           )
+           ${tagSql ? `AND ${tagSql}` : ""}
          ORDER BY ${communityOrderBy(sort)}
          LIMIT 100`,
-        [userId],
+        params,
       );
       noStore(res);
       res.json({ quizzes: result.rows.map(rowToCommunity) });
