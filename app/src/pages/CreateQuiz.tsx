@@ -2296,7 +2296,7 @@ function BulkAddVariablesButton({
 type AnswersEditorProps = {
   answers: AnswerOption[];
   variables: ProjectVariable[];
-  nameRefs?: React.MutableRefObject<Map<string, HTMLInputElement>>;
+  nameRefs?: React.MutableRefObject<Map<string, HTMLTextAreaElement>>;
   onCheckpoint: () => void;
   onUpdateAnswer: (answerId: string, patch: Partial<AnswerOption>) => void;
   onRemoveAnswer: (answerId: string) => void;
@@ -2309,6 +2309,94 @@ type AnswersEditorProps = {
   ) => void;
   onRemoveEffect: (answerId: string, effectId: string) => void;
 };
+
+function AnswerNameField({
+  answerId,
+  value,
+  nameRefs,
+  onFocus,
+  onChange,
+}: {
+  answerId: string;
+  value: string;
+  nameRefs?: React.MutableRefObject<Map<string, HTMLTextAreaElement>>;
+  onFocus: () => void;
+  onChange: (name: string) => void;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const [dragLines, setDragLines] = useState(1);
+  const dragLinesRef = useRef(dragLines);
+  dragLinesRef.current = dragLines;
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const style = getComputedStyle(el);
+    const lineHeight = parseFloat(style.lineHeight) || 20;
+    const pad =
+      (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+    el.style.height = "auto";
+    const contentLines = Math.max(
+      1,
+      Math.ceil((el.scrollHeight - pad) / lineHeight - 0.01),
+    );
+    const lines = Math.max(Math.min(contentLines, 3), dragLines);
+    el.style.height = `${lines * lineHeight + pad}px`;
+    el.style.overflowY = contentLines > lines ? "auto" : "hidden";
+  }, [value, dragLines]);
+
+  return (
+    <div className="min-w-0 flex-1">
+      <textarea
+        ref={(el) => {
+          ref.current = el;
+          if (!nameRefs) return;
+          if (el) nameRefs.current.set(answerId, el);
+          else nameRefs.current.delete(answerId);
+        }}
+        rows={1}
+        value={value}
+        aria-label="Answer name"
+        onFocus={onFocus}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.preventDefault();
+        }}
+        className="w-full resize-none border-none bg-transparent px-1 py-0.5 text-sm leading-5 text-black outline-none"
+      />
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize answer field"
+        className="mt-0.5 h-1.5 cursor-ns-resize rounded-full bg-black/15 hover:bg-[#2f5d76]/50"
+        onPointerDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const handle = e.currentTarget;
+          handle.setPointerCapture(e.pointerId);
+          const startY = e.clientY;
+          const startLines = dragLinesRef.current;
+          const lineHeight =
+            parseFloat(getComputedStyle(ref.current ?? handle).lineHeight) || 20;
+          const onMove = (ev: PointerEvent) => {
+            if (ev.pointerId !== e.pointerId) return;
+            const delta = Math.round((ev.clientY - startY) / lineHeight);
+            setDragLines(Math.max(1, startLines + delta));
+          };
+          const onUp = (ev: PointerEvent) => {
+            if (ev.pointerId !== e.pointerId) return;
+            handle.removeEventListener("pointermove", onMove);
+            handle.removeEventListener("pointerup", onUp);
+            handle.removeEventListener("pointercancel", onUp);
+          };
+          handle.addEventListener("pointermove", onMove);
+          handle.addEventListener("pointerup", onUp);
+          handle.addEventListener("pointercancel", onUp);
+        }}
+      />
+    </div>
+  );
+}
 
 function AnswersEditor({
   answers,
@@ -2330,19 +2418,13 @@ function AnswersEditor({
             key={answer.id}
             className="rounded-md border border-black/10 bg-white px-2 py-2"
           >
-            <div className="flex items-center gap-2">
-              <input
-                ref={(el) => {
-                  if (!nameRefs) return;
-                  if (el) nameRefs.current.set(answer.id, el);
-                  else nameRefs.current.delete(answer.id);
-                }}
-                type="text"
+            <div className="flex items-start gap-2">
+              <AnswerNameField
+                answerId={answer.id}
                 value={answer.name}
-                aria-label="Answer name"
+                nameRefs={nameRefs}
                 onFocus={onCheckpoint}
-                onChange={(e) => onUpdateAnswer(answer.id, { name: e.target.value })}
-                className="min-w-0 flex-1 border-none bg-transparent px-1 py-0.5 text-sm text-black outline-none"
+                onChange={(name) => onUpdateAnswer(answer.id, { name })}
               />
               <ResultsColorPicker
                 compact
@@ -6529,9 +6611,9 @@ export function CreateQuizEditor({
   const viewportRef = useRef<HTMLElement>(null);
   const varNameRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const localVarNameRefs = useRef<Map<string, HTMLInputElement>>(new Map());
-  const ansNameRefs = useRef<Map<string, HTMLInputElement>>(new Map());
-  const defaultAnsNameRefs = useRef<Map<string, HTMLInputElement>>(new Map());
-  const localDefaultAnsNameRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+  const ansNameRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
+  const defaultAnsNameRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
+  const localDefaultAnsNameRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
   const [projectName, setProjectName] = useState(initialQuiz.projectName);
   const [sectionName, setSectionName] = useState(initialSection.name);
   const [settingsPane, setSettingsPane] = useState<
@@ -11292,6 +11374,11 @@ export function CreateQuizEditor({
       bottom: quizUiPage.question.y + quizUiPage.question.height,
       extra: quizTextOverflow[quizUiPage.question.id] ?? 0,
     },
+    ...quizPlayLayout.answers.map((rect) => ({
+      id: rect.id,
+      bottom: rect.y + rect.height,
+      extra: quizTextOverflow[rect.id] ?? 0,
+    })),
     ...(quizUiPage.textBoxes ?? []).map((box) => ({
       id: box.id,
       bottom: box.y + box.height,
@@ -11318,6 +11405,16 @@ export function CreateQuizEditor({
       const needed = questionEl.offsetHeight + pad;
       const extra = Math.ceil(needed - quizUiPage.question.height);
       if (extra > 1) next[quizUiPage.question.id] = extra;
+    }
+    for (const rect of quizPlayLayout.answers) {
+      const content = quizTextMeasureRefs.current.get(rect.id);
+      const frame = content?.parentElement;
+      if (!content || !frame) continue;
+      const style = getComputedStyle(frame);
+      const pad =
+        (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      const extra = Math.ceil(content.offsetHeight + pad - rect.height);
+      if (extra > 1) next[rect.id] = extra;
     }
     for (const box of quizUiPage.textBoxes ?? []) {
       const content = quizTextMeasureRefs.current.get(box.id);
@@ -15309,16 +15406,16 @@ export function CreateQuizEditor({
                     }
                     setQuizSelectedAnswerId(answer.id);
                   }}
-                  className={`absolute cursor-pointer overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm transition ${
+                  className={`absolute flex cursor-pointer items-center justify-center overflow-hidden rounded-xl px-4 py-3 text-center font-medium shadow-sm transition ${
                     selected
                       ? "ring-2 ring-[#2f5d76] ring-offset-2 brightness-[0.85]"
                       : "hover:brightness-90"
                   }`}
                   style={{
                     left: rect.x,
-                    top: quizShiftedY(rect.y),
+                    top: quizShiftedY(rect.y, rect.id),
                     width: rect.width,
-                    height: rect.height,
+                    height: rect.height + (quizTextOverflow[rect.id] ?? 0),
                     ...answerBoxPaint(
                       answer.color,
                       answer.textColor,
@@ -15327,7 +15424,15 @@ export function CreateQuizEditor({
                     fontSize: quizUiChromeFontSize(rect, "answer"),
                   }}
                 >
-                  {answer.name.trim() || "Answer"}
+                  <div
+                    ref={(el) => {
+                      if (el) quizTextMeasureRefs.current.set(rect.id, el);
+                      else quizTextMeasureRefs.current.delete(rect.id);
+                    }}
+                    className="w-full break-words"
+                  >
+                    {answer.name.trim() || "Answer"}
+                  </div>
                 </button>
               );
             })}

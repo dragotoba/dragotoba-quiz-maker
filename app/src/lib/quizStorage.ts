@@ -81,6 +81,43 @@ export function normalizeCategories(raw: unknown): string[] {
 }
 
 /** Normalize a single tag fragment (no leading #). Empty if invalid. */
+export type TagSearchOp = "and" | "or" | "not";
+
+export type TagSearchTerm = {
+  tag: string;
+  op: TagSearchOp;
+};
+
+const MAX_TAG_SEARCH_TERMS = 12;
+
+export function activeTagSearch(terms: TagSearchTerm[]): TagSearchTerm[] {
+  const next: TagSearchTerm[] = [];
+  for (const term of terms) {
+    const tag = normalizeTagToken(term?.tag ?? "");
+    if (!tag) continue;
+    const op: TagSearchOp = term.op === "or" || term.op === "not" ? term.op : "and";
+    next.push({ tag, op });
+    if (next.length >= MAX_TAG_SEARCH_TERMS) break;
+  }
+  return next;
+}
+
+/** Left to right: and requires the tag, or allows it, not excludes it. */
+export function quizMatchesTagSearch(tags: string[], terms: TagSearchTerm[]): boolean {
+  const active = activeTagSearch(terms);
+  if (active.length === 0) return true;
+  const has = (tag: string) =>
+    tags.some((item) => item.toLowerCase() === tag.toLowerCase());
+  let result = has(active[0].tag);
+  for (let i = 1; i < active.length; i++) {
+    const present = has(active[i].tag);
+    if (active[i].op === "or") result = result || present;
+    else if (active[i].op === "not") result = result && !present;
+    else result = result && present;
+  }
+  return result;
+}
+
 export function normalizeTagToken(raw: string): string {
   let tag = raw.trim();
   while (tag.startsWith("#")) tag = tag.slice(1).trim();
@@ -585,8 +622,13 @@ export async function publishStoredQuiz(id: string, quiz?: StoredQuizDocument) {
 
 export async function listCommunityQuizzes(
   sort: CommunitySort = "trending",
+  options?: { name?: string; tags?: TagSearchTerm[] },
 ): Promise<CommunityQuizSummary[]> {
   const query = new URLSearchParams({ sort });
+  const trimmed = options?.name?.trim();
+  if (trimmed) query.set("q", trimmed);
+  const tags = activeTagSearch(options?.tags ?? []);
+  if (tags.length > 0) query.set("tags", JSON.stringify(tags));
   const data = await apiJson<{ quizzes: CommunityQuizSummary[] }>(
     `/community/quizzes?${query.toString()}`,
   );

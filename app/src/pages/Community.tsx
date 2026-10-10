@@ -5,10 +5,12 @@ import { fetchCurrentUser, getStoredUser, getToken } from "@/lib/auth";
 import {
   DEFAULT_QUIZ_COVER,
   QUIZ_CATEGORIES,
+  activeTagSearch,
   getCommunityQuiz,
   getCommunityQuizResult,
   getPublishedQuiz,
   listCommunityQuizzes,
+  quizMatchesTagSearch,
   remixCommunityQuiz,
   saveCommunityQuizResult,
   toggleCommunityLike,
@@ -16,6 +18,8 @@ import {
   type CommunityQuizSummary,
   type CommunitySort,
   type SavedCommunityResult,
+  type TagSearchOp,
+  type TagSearchTerm,
 } from "@/lib/quizStorage";
 import { CreateQuizEditor, parseStoredQuiz } from "./CreateQuiz";
 
@@ -99,16 +103,216 @@ function matchesCategoryFilter(
   return quizCategories(quiz).some((category) => selected.has(category));
 }
 
+function quizDisplayName(quiz: CommunityQuizSummary) {
+  return quiz.name.trim() || "Untitled Quiz";
+}
+
+function matchesNameFilter(quiz: CommunityQuizSummary, query: string) {
+  if (!query) return true;
+  return quizDisplayName(quiz).toLowerCase().includes(query.toLowerCase());
+}
+
+const TAG_SEARCH_OPS: TagSearchOp[] = ["and", "or", "not"];
+
+type TagDraftRow = {
+  id: string;
+  tag: string;
+  op: TagSearchOp;
+};
+
+function blankTagRow(): TagDraftRow {
+  return { id: crypto.randomUUID(), tag: "", op: "and" };
+}
+
+function rowsFromTagQuery(terms: TagSearchTerm[]): TagDraftRow[] {
+  if (terms.length === 0) return [blankTagRow()];
+  return terms.map((term) => ({ id: crypto.randomUUID(), tag: term.tag, op: term.op }));
+}
+
+function FunnelIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+      <path
+        d="M3.5 5h17l-6.2 7.2a2 2 0 0 0-.5 1.3V19l-3.6 1.6v-7.1a2 2 0 0 0-.5-1.3L3.5 5Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function AdvancedTagSearch({
+  rows,
+  onChange,
+  onClose,
+  onApply,
+  onClear,
+}: {
+  rows: TagDraftRow[];
+  onChange: (rows: TagDraftRow[]) => void;
+  onClose: () => void;
+  onApply: (terms: TagSearchTerm[]) => void;
+  onClear: () => void;
+}) {
+  const firstInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    firstInputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  function updateRow(id: string, patch: Partial<TagDraftRow>) {
+    onChange(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[110] flex items-center justify-center bg-black/40 p-4"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="advanced-search-title"
+        className="flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-[#1c2a33]/10 bg-white shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 px-5 pt-5">
+          <div>
+            <h2 id="advanced-search-title" className="text-lg font-semibold text-[#1c2a33]">
+              Advanced search
+            </h2>
+            <p className="mt-1 text-sm leading-relaxed text-[#4a5560]">
+              Search by tags. Operators are read from left to right.
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close advanced search"
+            onClick={onClose}
+            className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#4a5560] hover:bg-black/5"
+          >
+            ×
+          </button>
+        </div>
+        <div className="mt-4 flex flex-col gap-3 overflow-y-auto px-5 pb-2">
+          {rows.map((row, index) => (
+            <div key={row.id} className="flex flex-col gap-3">
+              {index > 0 ? (
+                <div
+                  className="flex justify-center gap-1"
+                  role="group"
+                  aria-label={`Operator before tag ${index + 1}`}
+                >
+                  {TAG_SEARCH_OPS.map((op) => (
+                    <button
+                      key={op}
+                      type="button"
+                      aria-pressed={row.op === op}
+                      onClick={() => updateRow(row.id, { op })}
+                      className={`cursor-pointer rounded-full px-3 py-1 text-xs font-semibold ${
+                        row.op === op
+                          ? "bg-[#2f5d76] text-white"
+                          : "bg-[#f4f1ea] text-[#2f5d76] hover:bg-[#2f5d76]/10"
+                      }`}
+                    >
+                      {op}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <div className="flex items-center gap-2">
+                <label className="flex min-w-0 flex-1 items-center rounded-lg border border-[#1c2a33]/15 bg-white px-3 py-2 focus-within:border-[#2f5d76]">
+                  <span className="select-none text-[#5c6770]" aria-hidden>
+                    #
+                  </span>
+                  <input
+                    ref={index === 0 ? firstInputRef : undefined}
+                    aria-label={`Tag ${index + 1}`}
+                    value={row.tag}
+                    spellCheck={false}
+                    placeholder="tag"
+                    onChange={(e) =>
+                      updateRow(row.id, { tag: e.target.value.replace(/^#+/, "") })
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        onApply(rows.map((item) => ({ tag: item.tag, op: item.op })));
+                      }
+                    }}
+                    className="min-w-0 flex-1 border-none bg-transparent px-0.5 text-sm text-[#1c2a33] outline-none placeholder:text-[#5c6770]/50"
+                  />
+                </label>
+                {rows.length > 1 ? (
+                  <button
+                    type="button"
+                    aria-label={`Remove tag ${index + 1}`}
+                    onClick={() => onChange(rows.filter((item) => item.id !== row.id))}
+                    className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#4a5560] hover:bg-black/5"
+                  >
+                    ×
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ))}
+          <button
+            type="button"
+            disabled={rows.length >= 12}
+            onClick={() => onChange([...rows, blankTagRow()])}
+            className="cursor-pointer self-start rounded-full px-3 py-1.5 text-sm font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/8 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Add tag
+          </button>
+        </div>
+        <div className="flex gap-2 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClear}
+            className="cursor-pointer rounded-full border border-[#2f5d76] bg-white px-5 py-2.5 text-sm font-semibold text-[#2f5d76] hover:bg-[#2f5d76]/5"
+          >
+            Clear
+          </button>
+          <button
+            type="button"
+            onClick={() => onApply(rows.map((item) => ({ tag: item.tag, op: item.op })))}
+            className="flex-1 cursor-pointer rounded-full border-none bg-[#2f5d76] px-5 py-2.5 text-sm font-semibold text-[#f8fafc] hover:bg-[#244a5e]"
+          >
+            Search
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Community() {
   const { quizId } = useParams<{ quizId: string }>();
   const navigate = useNavigate();
   const [sort, setSort] = useState<CommunitySort>("trending");
+  const [search, setSearch] = useState("");
+  const [appliedSearch, setAppliedSearch] = useState("");
+  const [browseQuizzes, setBrowseQuizzes] = useState<CommunityQuizSummary[]>([]);
+  const [searchQuizzes, setSearchQuizzes] = useState<CommunityQuizSummary[] | null>(null);
+  const [searchQuizzesKey, setSearchQuizzesKey] = useState("");
+  const [tagQuery, setTagQuery] = useState<TagSearchTerm[]>([]);
+  const [tagDraft, setTagDraft] = useState<TagDraftRow[]>(() => [blankTagRow()]);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(
     () => new Set(QUIZ_CATEGORIES),
   );
   const [categoryMenuOpen, setCategoryMenuOpen] = useState(false);
   const categoryMenuRef = useRef<HTMLDivElement>(null);
-  const [quizzes, setQuizzes] = useState<CommunityQuizSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<CommunityQuizSummary | null>(null);
@@ -130,12 +334,30 @@ export default function Community() {
   const [remixBusy, setRemixBusy] = useState(false);
 
   const allCategoriesSelected = selectedCategories.size === QUIZ_CATEGORIES.length;
+  const nameQuery = search.trim();
+  const activeTags = useMemo(() => activeTagSearch(tagQuery), [tagQuery]);
+  const requestKey = JSON.stringify({ name: appliedSearch, tags: activeTags });
+  const liveKey = JSON.stringify({ name: nameQuery, tags: activeTags });
+  const serverReady =
+    searchQuizzes !== null &&
+    searchQuizzesKey === requestKey &&
+    requestKey === liveKey &&
+    (appliedSearch.length > 0 || activeTags.length > 0);
+  const searchSource = serverReady && searchQuizzes ? searchQuizzes : browseQuizzes;
+  const nameMatches = useMemo(
+    () => searchSource.filter((quiz) => matchesNameFilter(quiz, nameQuery)),
+    [searchSource, nameQuery],
+  );
+  const tagMatches = useMemo(
+    () => nameMatches.filter((quiz) => quizMatchesTagSearch(quizTags(quiz), activeTags)),
+    [nameMatches, activeTags],
+  );
   const filteredQuizzes = useMemo(
     () =>
-      quizzes.filter((quiz) =>
+      tagMatches.filter((quiz) =>
         matchesCategoryFilter(quiz, selectedCategories, allCategoriesSelected),
       ),
-    [quizzes, selectedCategories, allCategoriesSelected],
+    [tagMatches, selectedCategories, allCategoriesSelected],
   );
 
   const categoryFilterLabel = allCategoriesSelected
@@ -158,16 +380,23 @@ export default function Community() {
   }, []);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => setAppliedSearch(search.trim()), 200);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError("");
+    setSearchQuizzes(null);
+    setSearchQuizzesKey("");
     void (async () => {
       try {
         const list = await listCommunityQuizzes(sort);
-        if (!cancelled) setQuizzes(list);
+        if (!cancelled) setBrowseQuizzes(list);
       } catch (err) {
         if (!cancelled) {
-          setQuizzes([]);
+          setBrowseQuizzes([]);
           setError(err instanceof Error ? err.message : "Could not load quizzes.");
         }
       } finally {
@@ -178,6 +407,37 @@ export default function Community() {
       cancelled = true;
     };
   }, [sort]);
+
+  useEffect(() => {
+    const tags = activeTagSearch(tagQuery);
+    if (!appliedSearch && tags.length === 0) {
+      setSearchQuizzes(null);
+      setSearchQuizzesKey("");
+      return;
+    }
+    const key = JSON.stringify({ name: appliedSearch, tags });
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await listCommunityQuizzes(sort, {
+          name: appliedSearch,
+          tags,
+        });
+        if (!cancelled) {
+          setSearchQuizzes(list);
+          setSearchQuizzesKey(key);
+        }
+      } catch {
+        if (!cancelled) {
+          setSearchQuizzes(null);
+          setSearchQuizzesKey("");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sort, appliedSearch, tagQuery]);
 
   useEffect(() => {
     if (!categoryMenuOpen) return;
@@ -229,7 +489,11 @@ export default function Community() {
     setSelectedError("");
     setSelected((prev) => {
       if (prev?.id === quizId) return prev;
-      return quizzes.find((quiz) => quiz.id === quizId) ?? null;
+      return (
+        browseQuizzes.find((quiz) => quiz.id === quizId) ??
+        searchQuizzes?.find((quiz) => quiz.id === quizId) ??
+        null
+      );
     });
     let cancelled = false;
     void (async () => {
@@ -237,9 +501,10 @@ export default function Community() {
         const listing = await getCommunityQuiz(quizId);
         if (cancelled) return;
         setSelected(listing);
-        setQuizzes((prev) =>
-          prev.map((quiz) => (quiz.id === listing.id ? { ...quiz, ...listing } : quiz)),
-        );
+        const merge = (quiz: CommunityQuizSummary) =>
+          quiz.id === listing.id ? { ...quiz, ...listing } : quiz;
+        setBrowseQuizzes((prev) => prev.map(merge));
+        setSearchQuizzes((prev) => (prev ? prev.map(merge) : prev));
       } catch (err) {
         if (cancelled) return;
         setSelected((prev) => (prev?.id === quizId ? prev : null));
@@ -261,12 +526,29 @@ export default function Community() {
     if ((!selected && !selectedError) || playQuiz) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (adminCategoryMenuOpen || categoryMenuOpen) return;
+      if (advancedOpen || adminCategoryMenuOpen || categoryMenuOpen) return;
       navigate("/community");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected, selectedError, playQuiz, navigate, adminCategoryMenuOpen, categoryMenuOpen]);
+  }, [selected, selectedError, playQuiz, navigate, adminCategoryMenuOpen, categoryMenuOpen, advancedOpen]);
+
+  function openAdvancedSearch() {
+    setTagDraft(rowsFromTagQuery(tagQuery));
+    setAdvancedOpen(true);
+  }
+
+  function applyTagSearch(terms: TagSearchTerm[]) {
+    const next = activeTagSearch(terms);
+    setTagQuery(next);
+    setTagDraft(rowsFromTagQuery(next));
+    setAdvancedOpen(false);
+  }
+
+  function clearTagSearch() {
+    setTagQuery([]);
+    setTagDraft([blankTagRow()]);
+  }
 
   function toggleCategory(category: string) {
     setSelectedCategories((prev) => {
@@ -277,17 +559,23 @@ export default function Community() {
     });
   }
 
-  function applyLike(id: string, likes: number, liked: boolean) {
-    setQuizzes((prev) =>
-      prev.map((quiz) => (quiz.id === id ? { ...quiz, likes, liked } : quiz)),
+  function patchListedQuiz(
+    id: string,
+    update: (quiz: CommunityQuizSummary) => CommunityQuizSummary,
+  ) {
+    setBrowseQuizzes((prev) => prev.map((quiz) => (quiz.id === id ? update(quiz) : quiz)));
+    setSearchQuizzes((prev) =>
+      prev ? prev.map((quiz) => (quiz.id === id ? update(quiz) : quiz)) : prev,
     );
+  }
+
+  function applyLike(id: string, likes: number, liked: boolean) {
+    patchListedQuiz(id, (quiz) => ({ ...quiz, likes, liked }));
     setSelected((prev) => (prev && prev.id === id ? { ...prev, likes, liked } : prev));
   }
 
   function applyListing(listing: CommunityQuizSummary) {
-    setQuizzes((prev) =>
-      prev.map((quiz) => (quiz.id === listing.id ? { ...quiz, ...listing } : quiz)),
-    );
+    patchListedQuiz(listing.id, (quiz) => ({ ...quiz, ...listing }));
     setSelected((prev) => (prev && prev.id === listing.id ? { ...prev, ...listing } : prev));
   }
 
@@ -428,7 +716,8 @@ export default function Community() {
 
   return (
     <main className="qh-page relative min-h-screen w-full font-[Poppins,sans-serif] text-[#1a1a1a]">
-      <div className="absolute top-6 left-6 z-[5] flex flex-wrap items-center gap-2 sm:left-8">
+      <div className="absolute top-6 right-6 left-6 z-[5] grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 sm:right-8 sm:left-8 sm:grid-cols-[auto_minmax(12rem,1fr)_auto]">
+        <div className="flex flex-wrap items-center gap-2">
         <label className="relative">
           <span className="sr-only">Sort community quizzes</span>
           <select
@@ -502,11 +791,41 @@ export default function Community() {
             </div>
           ) : null}
         </div>
+        </div>
+        <div className="col-span-2 flex justify-center sm:col-span-1 sm:col-start-2 sm:row-start-1 sm:px-4">
+          <div className="flex w-full max-w-md items-center gap-2">
+            <label className="min-w-0 flex-1">
+              <span className="sr-only">Search quizzes by name</span>
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search quizzes"
+                className="w-full rounded-full border border-[#2f5d76]/25 bg-white/70 px-4 py-2 text-sm text-[#1c2a33] shadow-sm outline-none placeholder:text-[#5c6770] hover:bg-white focus:border-[#2f5d76] focus:bg-white"
+              />
+            </label>
+            <button
+              type="button"
+              aria-label="Advanced search"
+              aria-expanded={advancedOpen}
+              aria-pressed={activeTags.length > 0}
+              onClick={openAdvancedSearch}
+              className={`flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border shadow-sm ${
+                activeTags.length > 0
+                  ? "border-[#2f5d76] bg-[#2f5d76] text-white hover:bg-[#244a5e]"
+                  : "border-[#2f5d76]/25 bg-white/70 text-[#2f5d76] hover:bg-white hover:text-[#244a5e]"
+              }`}
+            >
+              <FunnelIcon />
+            </button>
+          </div>
+        </div>
+        <div className="col-start-2 row-start-1 justify-self-end sm:col-start-3 sm:row-start-1">
+          <AccountButton />
+        </div>
       </div>
 
-      <AccountButton className="absolute top-6 right-6 z-[5] sm:right-8" />
-
-      <div className="mx-auto flex w-full max-w-5xl flex-col px-6 pt-24 pb-10 sm:px-8 sm:pt-28 sm:pb-14">
+      <div className="mx-auto flex w-full max-w-5xl flex-col px-6 pt-36 pb-10 sm:px-8 sm:pt-28 sm:pb-14">
         <Link
           to="/"
           className="text-sm font-medium text-[#2f5d76] no-underline hover:text-[#244a5e]"
@@ -529,14 +848,26 @@ export default function Community() {
         ) : filteredQuizzes.length === 0 ? (
           <div className="mt-10 rounded-2xl border border-[#1c2a33]/10 bg-white/80 px-6 py-10 shadow-[0_8px_32px_rgba(0,0,0,0.08)]">
             <p className="text-base font-semibold text-[#1c2a33]">
-              {quizzes.length === 0
+              {browseQuizzes.length === 0 && !nameQuery && activeTags.length === 0
                 ? "No community quizzes yet."
-                : "No quizzes match these categories."}
+                : nameQuery && activeTags.length > 0 && tagMatches.length === 0
+                  ? "No quizzes match that name and those tags."
+                  : nameMatches.length === 0
+                    ? "No quizzes match that name."
+                    : tagMatches.length === 0
+                      ? "No quizzes match those tags."
+                      : "No quizzes match these categories."}
             </p>
             <p className="mt-2 max-w-lg text-sm leading-relaxed text-[#4a5560]">
-              {quizzes.length === 0
+              {browseQuizzes.length === 0 && !nameQuery && activeTags.length === 0
                 ? "Published quizzes will show up here. Check back soon, or create one of your own."
-                : "Try selecting more categories, or choose All."}
+                : nameQuery && activeTags.length > 0 && tagMatches.length === 0
+                  ? "Try a different name or tags, or clear the search."
+                  : nameMatches.length === 0
+                    ? "Try a different name, or clear the search."
+                    : tagMatches.length === 0
+                      ? "Try different tags, or clear advanced search."
+                      : "Try selecting more categories, or choose All."}
             </p>
           </div>
         ) : (
@@ -596,6 +927,16 @@ export default function Community() {
           </ul>
         )}
       </div>
+
+      {advancedOpen ? (
+        <AdvancedTagSearch
+          rows={tagDraft}
+          onChange={setTagDraft}
+          onClose={() => setAdvancedOpen(false)}
+          onApply={applyTagSearch}
+          onClear={clearTagSearch}
+        />
+      ) : null}
 
       {popupOpen && (
         <div
