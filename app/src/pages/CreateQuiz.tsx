@@ -2359,9 +2359,6 @@ function AnswerNameField({
         aria-label="Answer name"
         onFocus={onFocus}
         onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") e.preventDefault();
-        }}
         className="w-full resize-none border-none bg-transparent px-1 py-0.5 text-sm leading-5 text-black outline-none"
       />
       <div
@@ -15386,8 +15383,13 @@ export function CreateQuizEditor({
                 ),
               }}
             >
-              <div ref={quizQuestionMeasureRef} className="w-full break-words">
-                {quizQuestionBox.question?.trim() || "\u00a0"}
+              <div
+                ref={quizQuestionMeasureRef}
+                className="w-full whitespace-pre-wrap break-words"
+              >
+                {quizQuestionBox.question?.trim()
+                  ? quizQuestionBox.question
+                  : "\u00a0"}
               </div>
             </div>
 
@@ -15429,9 +15431,9 @@ export function CreateQuizEditor({
                       if (el) quizTextMeasureRefs.current.set(rect.id, el);
                       else quizTextMeasureRefs.current.delete(rect.id);
                     }}
-                    className="w-full break-words"
+                    className="w-full whitespace-pre-wrap break-words"
                   >
-                    {answer.name.trim() || "Answer"}
+                    {answer.name.trim() ? answer.name : "Answer"}
                   </div>
                 </button>
               );
